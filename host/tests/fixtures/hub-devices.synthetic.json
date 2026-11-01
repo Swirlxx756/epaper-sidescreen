@@ -1,0 +1,328 @@
+{
+ "version": 1,
+ "savedAt": "2026-10-28T09:09:45.000Z",
+ "devices": {
+  "dev-a": {
+   "deviceId": "dev-a",
+   "hostname": "HOST-A",
+   "updatedAt": "2026-10-28T09:09:30.000Z",
+   "receivedAt": "2026-10-28T09:09:31.000Z",
+   "periodWindows": {
+    "today": {
+     "endsAt": "2026-10-28T13:30:00.000Z",
+     "key": "2026-10-28"
+    },
+    "month": {
+     "endsAt": "2026-10-31T13:30:00.000Z",
+     "key": "2026-10"
+    },
+    "timeZone": "Australia/Adelaide"
+   },
+   "periods": {
+    "today": {
+     "totalTokens": 1000000000,
+     "costUsd": 300.0,
+     "models": {
+      "claude-opus-5-5": 600000000,
+      "claude-sonnet-5-5": 300000000,
+      "deepseek-flash": 100000000
+     }
+    },
+    "month": {
+     "totalTokens": 5000000000,
+     "costUsd": 1500.0
+    },
+    "allTime": {
+     "totalTokens": 5000000000,
+     "costUsd": 1500.0,
+     "models": {
+      "claude-opus-5-5": 3000000000,
+      "gpt-6.1-sol": 1000000000,
+      "claude-sonnet-5-5": 500000000,
+      "deepseek-flash": 300000000,
+      "claude-haiku-5-5": 100000000,
+      "tiny-model": 50000000,
+      "other-model": 50000000,
+      "unknown": 0
+     }
+    }
+   },
+   "limits": {
+    "updatedAt": "2026-10-28T09:09:00.000Z",
+    "refreshMs": 300000,
+    "providers": [
+     {
+      "provider": "claude",
+      "accountLabel": "Max 5x",
+      "status": "ok",
+      "stale": false,
+      "updatedAt": "2026-10-28T09:09:00.000Z",
+      "windows": [
+       {
+        "kind": "session",
+        "label": "",
+        "usedPercent": 41,
+        "resetsAt": "2026-10-28T11:07:00.000Z"
+       },
+       {
+        "kind": "weekly",
+        "label": "",
+        "usedPercent": 37,
+        "resetsAt": "2026-11-02T17:10:00.000Z"
+       },
+       {
+        "kind": "weekly",
+        "label": "Fable",
+        "usedPercent": 6,
+        "resetsAt": "2026-11-02T17:10:00.000Z"
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "accountLabel": "Plus",
+      "status": "ok",
+      "stale": false,
+      "updatedAt": "2026-10-28T09:09:40.000Z",
+      "windows": [
+       {
+        "kind": "session",
+        "label": "",
+        "usedPercent": 47,
+        "resetsAt": "2026-10-28T11:56:00.000Z",
+        "windowMinutes": 300
+       },
+       {
+        "kind": "weekly",
+        "label": "",
+        "usedPercent": 7,
+        "resetsAt": "2026-11-04T06:10:00.000Z",
+        "windowMinutes": 10080
+       }
+      ]
+     },
+     {
+      "provider": "antigravity",
+      "accountLabel": "Pro",
+      "status": "ok",
+      "stale": false,
+      "updatedAt": "2026-10-28T09:09:00.000Z",
+      "windows": [
+       {
+        "kind": "session",
+        "label": "Gemini 5-hour",
+        "usedPercent": 0,
+        "resetsAt": "2026-10-28T14:09:00.000Z"
+       },
+       {
+        "kind": "weekly",
+        "label": "Gemini weekly",
+        "usedPercent": 3.177065,
+        "resetsAt": "2026-10-30T06:12:55.000Z"
+       },
+       {
+        "kind": "weekly",
+        "label": "Gemini 4 Argon weekly",
+        "usedPercent": 100,
+        "resetsAt": "2026-10-30T06:09:36.000Z"
+       },
+       {
+        "kind": "session",
+        "label": "Claude/GPT 5-hour",
+        "usedPercent": 28.34664,
+        "resetsAt": "2026-10-28T13:54:00.000Z"
+       },
+       {
+        "kind": "weekly",
+        "label": "Claude/GPT weekly",
+        "usedPercent": 36.37432,
+        "resetsAt": "2026-10-30T06:14:46.000Z"
+       }
+      ]
+     },
+     {
+      "provider": "deepseek",
+      "accountLabel": "Pay-as-you-go",
+      "status": "ok",
+      "stale": false,
+      "updatedAt": "2026-10-28T09:09:00.000Z",
+      "balance": {
+       "amount": 38.66,
+       "currency": "CNY",
+       "todaySpend": 7.42
+      },
+      "windows": [
+       {
+        "kind": "billing",
+        "label": "Balance",
+        "remaining": 38.66,
+        "currency": "CNY"
+       }
+      ]
+     },
+     {
+      "provider": "zai",
+      "status": "notConfigured",
+      "updatedAt": "2026-10-28T09:09:00.000Z",
+      "windows": []
+     }
+    ]
+   },
+   "history": {
+    "daily": [
+     {
+      "date": "2026-10-20",
+      "tokens": 100000000,
+      "cost": 30.0
+     },
+     {
+      "date": "2026-10-21",
+      "tokens": 200000000,
+      "cost": 60.0
+     },
+     {
+      "date": "2026-10-22",
+      "tokens": 0,
+      "cost": 0.0
+     },
+     {
+      "date": "2026-10-23",
+      "tokens": 400000000,
+      "cost": 120.0
+     },
+     {
+      "date": "2026-10-27",
+      "tokens": 500000000,
+      "cost": 150.0
+     },
+     {
+      "date": "2026-10-28",
+      "tokens": 1000000000,
+      "cost": 300.0
+     }
+    ],
+    "monthly": [],
+    "summary": {}
+   }
+  },
+  "dev-b": {
+   "deviceId": "dev-b",
+   "hostname": "HOST-B",
+   "updatedAt": "2026-10-28T09:00:00.000Z",
+   "receivedAt": "2026-10-28T09:00:05.000Z",
+   "periodWindows": {
+    "today": {
+     "endsAt": "2026-10-28T13:30:00.000Z",
+     "key": "2026-10-28"
+    },
+    "month": {
+     "endsAt": "2026-10-31T13:30:00.000Z",
+     "key": "2026-10"
+    },
+    "timeZone": "Australia/Adelaide"
+   },
+   "periods": {
+    "today": {
+     "totalTokens": 130000000,
+     "costUsd": 11.5,
+     "models": {
+      "claude-opus-5-5": 130000000
+     }
+    },
+    "month": {
+     "totalTokens": 1500000000,
+     "costUsd": 600.0
+    },
+    "allTime": {
+     "totalTokens": 1500000000,
+     "costUsd": 600.0,
+     "models": {
+      "claude-opus-5-5": 1200000000,
+      "gpt-5.6-sol": 300000000
+     }
+    }
+   },
+   "limits": {
+    "updatedAt": "2026-10-28T09:09:55.000Z",
+    "refreshMs": 300000,
+    "providers": [
+     {
+      "provider": "claude",
+      "status": "unavailable",
+      "updatedAt": "2026-10-28T09:09:58.000Z",
+      "windows": []
+     },
+     {
+      "provider": "claude",
+      "accountLabel": "Max 5x",
+      "status": "ok",
+      "stale": false,
+      "updatedAt": "2026-10-28T09:09:50.000Z",
+      "windows": [
+       {
+        "kind": "session",
+        "label": "",
+        "usedPercent": 40,
+        "resetsAt": "2026-10-28T11:07:00.000Z"
+       },
+       {
+        "kind": "weekly",
+        "label": "",
+        "usedPercent": 36.6,
+        "resetsAt": "2026-11-02T17:10:00.000Z"
+       },
+       {
+        "kind": "weekly",
+        "label": "Fable",
+        "usedPercent": 6,
+        "resetsAt": "2026-11-02T17:10:00.000Z"
+       }
+      ]
+     },
+     {
+      "provider": "codex",
+      "accountLabel": "Plus",
+      "status": "ok",
+      "stale": false,
+      "updatedAt": "2026-10-28T09:05:00.000Z",
+      "windows": [
+       {
+        "kind": "session",
+        "label": "",
+        "usedPercent": 99,
+        "resetsAt": "2026-10-28T11:56:00.000Z"
+       },
+       {
+        "kind": "weekly",
+        "label": "",
+        "usedPercent": 99,
+        "resetsAt": "2026-11-04T06:10:00.000Z"
+       }
+      ]
+     }
+    ]
+   },
+   "history": {
+    "daily": [
+     {
+      "date": "2026-10-22",
+      "tokens": 300000000,
+      "cost": 90.0
+     },
+     {
+      "date": "2026-10-23",
+      "tokens": 100000000,
+      "cost": 30.0
+     },
+     {
+      "date": "2026-10-28",
+      "tokens": 130000000,
+      "cost": 11.5
+     }
+    ],
+    "monthly": [],
+    "summary": {}
+   }
+  }
+ }
+}

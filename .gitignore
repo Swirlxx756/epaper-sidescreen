@@ -1,0 +1,10 @@
+node_modules/
+.venv/
+__pycache__/
+.env
+*.log
+.DS_Store
+Thumbs.db
+
+# 本机配置（从 config.example.json 复制后自己改）
+host/config.json

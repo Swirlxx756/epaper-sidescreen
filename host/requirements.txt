@@ -1,0 +1,5 @@
+psutil>=5.9
+pyserial>=3.5
+pystray>=0.19   # 图形界面的托盘图标（gui.py）
+Pillow>=10      # 托盘图标的图片
+sv-ttk>=2.6   # 窗口的 Windows 11 风格主题，跟随系统明暗（可选；没装就用原生主题）

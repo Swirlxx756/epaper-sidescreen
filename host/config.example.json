@@ -1,0 +1,31 @@
+{
+  "_comment": "Copy to config.json (same folder) and edit. null = auto. Command-line flags override these.",
+  "port": null,
+  "transport": "serial",
+  "wifi_addr": null,
+  "baud": 115200,
+  "interval": 30,
+  "handshake_timeout": 120,
+  "response_timeout": 180,
+  "reconnect_interval": 10,
+  "token_source": "tokscale",
+  "token_interval": 60,
+  "token_timeout": 45,
+  "tokscale_cmd": null,
+  "tokscale_clients": null,
+  "limits_interval": 180,
+  "ccusage_cmd": null,
+  "disk": null,
+  "gpu": true,
+  "v2": {
+    "enabled": true,
+    "tm_file": null,
+    "mouse": true,
+    "primary": "today",
+    "heat_rows": 7,
+    "heat_weeks": 10,
+    "calendar": false,
+    "refresh_min": 3,
+    "weather": {"on": false, "place": "上海", "lat": 31.23, "lon": 121.47, "after_min": 10}
+  }
+}
