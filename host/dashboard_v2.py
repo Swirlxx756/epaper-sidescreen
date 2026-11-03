@@ -18,6 +18,7 @@ PRIMARIES = ("today", "total")
 HEAT_ROWS = (5, 7)  # 热图每列几格；7 = 按星期对齐（默认），5 = 不按星期
 REFRESH_MINUTES = (3, 5, 10, 15, 30, 60)  # 屏幕刷新间隔可选值；3 = 三色屏最短间隔（默认，不发 every）
 HEAT_LEVELS = 12  # 热图密度档数（'1'–'9'、'A'–'C'；固件 1–8 档白→红，9–12 档红上加黑点）
+HEAT_FULL = 1_000_000_000  # 热图固定刻度：一天用到这么多 token（1B）就是最深的第 12 档，每档 1/12
 HEAT_DIGITS = "0123456789ABC"
 B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 MODEL_NAME_MAX = 18  # 固件显示上限；超过的部分固件也会截断，主机先截可省字节
@@ -295,7 +296,7 @@ def build_heat(snap: TmSnapshot | None, now: datetime, rows: int = 7, weeks: int
             d.append("0")
             t.append(B64[0])
         else:
-            d.append(HEAT_DIGITS[min(HEAT_LEVELS, -(-v * HEAT_LEVELS // peak))])  # ceil(v/peak*12)，整数运算避免浮点边界
+            d.append(HEAT_DIGITS[min(HEAT_LEVELS, -(-v * HEAT_LEVELS // HEAT_FULL))])  # ceil(v/1B*12)，封顶 12；整数运算避免浮点边界
             t.append(B64[min(63, math.floor(v * 63 / peak + 0.5))])
     msg.update(d="".join(d), t="".join(t))
     if known:

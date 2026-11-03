@@ -233,7 +233,7 @@ class HeatTests(unittest.TestCase):
         d = self.msg["d"]
         # 10-20 起有记录；10-24..26 所有设备都已在记录却没数据 = 真 0；10-20 之前没记录 = 未知
         self.assertEqual(d[:93], "-" * 93)
-        self.assertEqual(d[93:], "23460006C")   # 10-20..10-28：ceil(v/peak*12)，10–12 档写作 A–C
+        self.assertEqual(d[93:], "23460006C")   # 10-20..10-28：ceil(v/1B*12)，封顶 12，10–12 档写作 A–C
         self.assertEqual(set(d), set("-02346C"))
 
     def test_trend_heights_are_base64_chars_relative_to_peak(self):
@@ -243,17 +243,26 @@ class HeatTests(unittest.TestCase):
 
     def test_boundaries_exactly_on_a_level_edge(self):
         snap = tm_source.TmSnapshot(observed_at=NOW.astimezone(timezone.utc), daily_known_from="2026-10-22",
-                                    daily={"2026-10-22": 100, "2026-10-23": 101, "2026-10-24": 200,
-                                           "2026-10-25": 201, "2026-10-26": 900, "2026-10-27": 1200})
+                                    daily={"2026-10-22": 1, "2026-10-23": 250_000_000, "2026-10-24": 250_000_001,
+                                           "2026-10-25": 916_666_666, "2026-10-26": 1_000_000_000,
+                                           "2026-10-27": 3_000_000_000})
         d = dv.build_heat(snap, NOW)["d"]
-        # 10-22..28：边界值 100/200 落在下一档之前（1/12、2/12 属于 1、2 档），10-28 没记录但各设备都已在记录 = 0
-        self.assertEqual(d[-7:], "12239C0")
+        # 10-22..28：刻度固定 1B（每档 1/12 = 83.3M）；正好 3/12 = 250M 属于第 3 档，多 1 就是第 4 档；
+        # 1B 及以上都是第 12 档；10-28 没记录但各设备都已在记录 = 0
+        self.assertEqual(d[-7:], "134BCC0")
+
+    def test_levels_use_the_fixed_scale_not_the_window_peak(self):
+        snap = tm_source.TmSnapshot(observed_at=NOW.astimezone(timezone.utc), daily_known_from="2026-10-27",
+                                    daily={"2026-10-27": 100_000_000, "2026-10-28": 200_000_000})
+        m = dv.build_heat(snap, NOW)
+        self.assertEqual(m["d"][-2:], "23")                       # 峰值只有 200M，也不会画成最深
+        self.assertEqual(m["peak"], "200M")
 
     def test_peak_and_active_cover_the_whole_window(self):
         snap = tm_source.TmSnapshot(observed_at=NOW.astimezone(timezone.utc), daily_known_from="2026-07-19",
                                     daily={"2026-07-19": 5, "2026-09-10": 1, "2026-10-28": 10})
         m = dv.build_heat(snap, NOW)
-        self.assertEqual((m["d"][0], m["d"][-1]), ("6", "C"))
+        self.assertEqual((m["d"][0], m["d"][-1]), ("1", "1"))   # 几个 token 也算第 1 档
         self.assertEqual((m["active"], m["peak"]), (3, "10"))   # 最早一天（07-19 周日）也在窗口里
         snap.daily["2026-07-18"] = 999                           # 前一天（周六）落在窗口外
         self.assertEqual(dv.build_heat(snap, NOW)["peak"], "10")
