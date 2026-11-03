@@ -315,11 +315,10 @@ class AppTodoTests(AppTestBase):
     def test_buttons_disabled_until_v2_link(self):
         app = self.make()
         self.assertEqual(str(app.refresh_now_btn.cget("state")), "disabled")
-        self.assertEqual(str(app.todo_push_btn.cget("state")), "disabled")
         self.assertEqual(str(app.push_page_btn.cget("state")), "disabled")
         self.connect(app)
         self.assertEqual(str(app.refresh_now_btn.cget("state")), "normal")
-        self.assertEqual(str(app.todo_push_btn.cget("state")), "normal")
+        self.assertEqual(str(app.push_page_btn.cget("state")), "normal")
 
     def saved_page(self):
         if not self.path.exists():
@@ -334,8 +333,7 @@ class AppTodoTests(AppTestBase):
         self.assertEqual(w.commands, [])                              # 点单选框什么也不发
         self.assertIsNone(self.saved_page())                          # 也不保存
         self.assertEqual(app.view_page, "dash")
-        self.assertEqual(app.page_status_var.get(), "预览：仪表盘 · 还没推送到屏幕")
-        self.assertEqual(app.page_board_var.get(), "屏幕当前：自动")
+        self.assertEqual(app.page_status_var.get(), "")                # 只是预览：没有状态文字
         self.assertEqual(str(app.data_tabs.select()), str(app.preview_tab))      # 切到屏幕预览标签
         app.push_page()
         tag, msgs, _ = w.commands[-1]
@@ -344,17 +342,16 @@ class AppTodoTests(AppTestBase):
         self.feed(("cmd", "page", {"ok": True, "err": ""}))
         self.assertEqual(self.saved_page(), "dash")
         self.assertEqual(app.page, "dash")
-        self.assertEqual(app.page_board_var.get(), "屏幕当前：仪表盘")
         self.assertEqual(app.page_status_var.get(), gui.REFRESHING_TEXT)       # 固件没有开始事件：自己进入刷新中
         self.assertTrue(app.refreshing)
-        for w in (app.push_page_btn, app.refresh_now_btn, app.todo_push_btn):
+        for w in (app.push_page_btn, app.refresh_now_btn):
             self.assertEqual(str(w.cget("state")), "disabled")
         for r in app.page_radios:                                     # 单选框只是预览，刷新中也能点
             self.assertEqual(str(r.cget("state")), "normal")
         self.feed(("refreshed", datetime(2026, 10, 29, 23, 48, 5)))
         self.assertEqual(app.page_status_var.get(), "屏幕已刷新 23:48:05")
         self.assertFalse(app.refreshing)
-        for w in (app.push_page_btn, app.refresh_now_btn, app.todo_push_btn):
+        for w in (app.push_page_btn, app.refresh_now_btn):
             self.assertEqual(str(w.cget("state")), "normal")
 
     def test_failed_page_push_is_not_saved(self):
@@ -406,28 +403,26 @@ class AppTodoTests(AppTestBase):
         self.assertIn("没有收到刷新完成", app.page_status_var.get())
         self.assertEqual(str(app.refresh_now_btn.cget("state")), "normal")
 
-    def test_ctrl_r_refreshes_only_when_free(self):
+    def test_refresh_now_button_only_refreshes_and_not_twice(self):
         app = self.make()
-        self.assertEqual(app._on_ctrl_r(), "break")                   # 没连接：什么也不发
+        app.refresh_now()
+        self.assertEqual(FakeWorker.instances, [])                    # 没连接：什么也不发
         w = self.connect(app)
-        app._on_ctrl_r()
+        app.page_var.set("weather")
+        app.on_page()
+        app.refresh_now()                                             # 只刷新，不换页
         self.assertEqual(w.commands[-1][:2], ("refresh", [tp.refresh_now_msg()]))
         self.feed(("cmd", "refresh", {"ok": True, "err": ""}))
-        app._on_ctrl_r()
-        self.assertEqual(len(w.commands), 1)                          # 刷新中不重复发
-
-    def test_refresh_now_button(self):
-        app = self.make()
-        w = self.connect(app)
         app.refresh_now()
-        self.assertEqual(w.commands[-1][:2], ("refresh", [tp.refresh_now_msg()]))
+        self.assertEqual(len(w.commands), 1)                          # 刷新中不重复发
+        self.assertIsNone(self.saved_page())
 
     def test_page_without_connection_previews_but_sends_nothing(self):
         app = self.make()
         app.page_var.set("dash")
         app.on_page()
         self.assertEqual(app.view_page, "dash")
-        self.assertEqual(app.page_status_var.get(), "预览：仪表盘 · 还没推送到屏幕\n" + gui.DISCONNECTED_PAGE_TEXT)
+        self.assertEqual(app.page_status_var.get(), "")
         self.assertEqual(str(app.push_page_btn.cget("state")), "disabled")
         app.push_page()
         self.assertEqual(FakeWorker.instances, [])
@@ -464,66 +459,51 @@ class AppTodoTests(AppTestBase):
         self.assertEqual(data["v2"]["todo"]["items"], [item("买牛奶和鸡蛋", True, True), item("买牛奶")])
         self.assertEqual(len(app.todo_tree.get_children()), 2)
 
-    def test_push_sends_frames_and_shows_preview(self):
-        self.path.write_text(json.dumps({"v2": {"todo": {"items": [item("写周报"), item("紧急", False, True)]}}}),
-                             encoding="utf-8")
-        app = self.make(v2={"todo": {"items": [item("写周报"), item("紧急", False, True)]}})
+    def test_editing_todo_switches_preview_to_todo_page_without_sending(self):
+        app = self.make()
         w = self.connect(app)
-        app.push_todo()
-        tag, frames, _ = w.commands[-1]
-        self.assertEqual(tag, "todo")
-        self.assertEqual([f["type"] for f in frames][0::len(frames) - 1], ["img_begin", "refresh_now"])
-        self.assertTrue(app.todo_ppm.startswith(b"P6\n400 300\n"))
-        self.assertIsNone(app.preview_ppm)                                           # 主预览不被待办占用
-        self.assertEqual(str(app.todo_push_btn.cget("state")), "disabled")          # 传输中不能再点
-        self.feed(("cmd", "todo", {"ok": True, "err": "", "sent": len(frames)}))
-        self.assertEqual(app.todo_status_var.get(), gui.REFRESHING_TEXT)
-        self.assertEqual(str(app.todo_push_btn.cget("state")), "disabled")          # 刷新中也不能点
-        self.feed(("refreshed", datetime(2026, 10, 29, 23, 48, 5)))
-        self.assertEqual(app.todo_status_var.get(), "屏幕已刷新 23:48:05")
-        self.assertEqual(str(app.todo_push_btn.cget("state")), "normal")
+        self.assertEqual(app.view_page, "auto")
+        app.todo_text_var.set("写周报")
+        app.todo_add()
+        self.assertEqual((app.view_page, app.page_var.get()), ("todo", "todo"))      # 单选框跟着切到待办
+        self.assertEqual(str(app.data_tabs.select()), str(app.preview_tab))
+        self.assertTrue(app._todo_view_ppm.startswith(b"P6\n400 300\n"))
+        self.assertEqual(w.commands, [])                                              # 只预览，不推送
+        self.assertIsNone(self.saved_page())
 
-    def test_failed_push_marks_thumbnail_as_not_delivered(self):
+    def test_failed_todo_page_push_shows_error_and_frees_buttons(self):
         app = self.make(v2={"todo": {"items": [item("写周报")]}})
         self.connect(app)
-        app.push_todo()
+        app.page_var.set("todo")
+        app.on_page()
+        app.push_page()
         self.feed(("cmd", "todo", {"ok": False, "err": "timeout", "sent": 1}))
-        self.assertIn("没有送达", app.todo_preview_note_var.get())
+        self.assertEqual(app.page_status_var.get(), gui.page_error_text("timeout"))
         self.assertFalse(app.refreshing)
-        self.assertEqual(str(app.todo_push_btn.cget("state")), "normal")
+        self.assertIsNone(self.saved_page())
+        self.assertEqual(str(app.push_page_btn.cget("state")), "normal")
 
     def test_old_firmware_shows_one_line_note_without_dialog(self):
         app = self.make()
         self.connect(app)
-        app.push_todo()
+        app.page_var.set("todo")
+        app.on_page()
         with patch("tkinter.messagebox.showerror") as dlg, patch("tkinter.messagebox.showwarning") as dlg2:
-            self.feed(("cmd", "todo", {"ok": False, "err": "unknown_type", "sent": 0}))
-            self.assertEqual(app.todo_status_var.get(), gui.OLD_FW_TEXT)
-            app.page_var.set("todo")
-            app.on_page()
             app.push_page()
-            self.feed(("cmd", "page", {"ok": False, "err": "unknown_type", "sent": 0}))
+            self.feed(("cmd", "todo", {"ok": False, "err": "unknown_type", "sent": 0}))
+            self.assertEqual(app.page_status_var.get(), gui.OLD_FW_TEXT)
+            app.push_page()
+            self.feed(("cmd", "todo", {"ok": False, "err": "unknown_type", "sent": 0}))
             self.assertEqual(app.page_status_var.get(), gui.OLD_FW_TEXT)
         dlg.assert_not_called()
         dlg2.assert_not_called()
         self.assertEqual(len(FakeWorker.instances[-1].commands), 2)                  # 没有重试
 
-    def test_preview_button_does_not_need_a_connection_and_uses_thumbnail_not_main_preview(self):
-        app = self.make(v2={"todo": {"items": [item("写周报")]}})
-        app.preview_todo()
-        self.assertTrue(app.todo_ppm.startswith(b"P6\n400 300\n"))
-        self.assertIsNone(app.preview_ppm)                                              # 主预览不被占用
-        self.assertEqual((app._todo_thumb.width(), app._todo_thumb.height()), (gui.THUMB_W, gui.THUMB_H))
-        self.assertIn("还没有推送", app.todo_preview_note_var.get())
-        dash = b"P6\n400 300\n255\n" + b"\xff" * 360000
-        app._on_preview(dash, "")
-        self.assertIs(app.preview_ppm, dash)                                            # 仪表盘预览照常更新
-
-    def test_enter_updates_selected_row_else_adds_and_mode_label_follows(self):
+    def test_enter_updates_selected_row_else_adds(self):
         app = self.make()
-        self.assertIn("新增事项", app.todo_mode_var.get())
         self.assertEqual(str(app.todo_update_btn.cget("state")), "disabled")
         self.assertNotEqual(app.todo_empty.place_info(), {})                            # 空状态提示
+        self.assertEqual(int(str(app.todo_tree.cget("height"))), 1)
         app.todo_text_var.set("写周报")
         app.todo_commit()
         self.assertEqual(app.todo_empty.place_info(), {})
@@ -532,10 +512,11 @@ class AppTodoTests(AppTestBase):
         app.todo_text_var.set("买牛奶")
         app.todo_commit()
         self.assertEqual(len(app.todo_items), 2)
+        self.assertEqual(int(str(app.todo_tree.cget("height"))), 2)                    # 有几条就几行高
         app.todo_tree.selection_set("0")
         self.root.update()
-        self.assertIn("正在编辑第 1 条", app.todo_mode_var.get())
         self.assertEqual(app.todo_text_var.get(), "写周报")
+        self.assertEqual(str(app.todo_update_btn.cget("state")), "normal")
         app.todo_text_var.set("写月报")
         app.todo_commit()                                                               # 选中 = 修改
         self.assertEqual([i["text"] for i in app.todo_items], ["写月报", "买牛奶"])

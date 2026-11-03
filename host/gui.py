@@ -46,7 +46,6 @@ log = logging.getLogger("epaper_host.gui")
 LOG_LOGGERS = ("epaper_host", "mouse_rapoo")     # tm_source / weather / todo 的日志器是 epaper_host 的子日志器
 LOG_MAX_LINES = 500
 POLL_MS = 200
-SPIN_DEBOUNCE_MS = 400
 CLOSE_JOIN_S = 8.0
 SCAN_TIMEOUT_S = 10.0   # 板子扫描 WiFi 约 2–4 秒
 PREVIEW_DEBOUNCE_MS = 500   # 一轮推送的几条消息陆续到，攒一下再渲染
@@ -416,12 +415,11 @@ def ota_error_text(err: str) -> str:
 
 
 PAGE_CN = dict(todo_page.PAGES)
-TODO_LIST_ROWS = 6
 OLD_FW_TEXT = "板子固件太旧，还不支持这个功能（升级到 1.6.0 以上）"
 
 
 def page_error_text(err: str) -> str:
-    """页面 / 待办 / 立即刷新命令失败时的一句话。旧固件回 unknown_type：只提示，不重试。"""
+    """推送页面 / 待办失败时的一句话。旧固件回 unknown_type：只提示，不重试。"""
     if todo_page.is_unsupported(err):
         return OLD_FW_TEXT
     if "too_big" in err:
@@ -524,18 +522,18 @@ LOG_FONTS = ("Cascadia Mono", "Consolas")
 UI_FONT = "Microsoft YaHei UI"
 UI_PT = 10
 GAP = 10                   # 分组之间的间距（96 DPI 下的像素）
+OWN_WHEEL = ("Text", "Listbox")                  # 自己处理滚轮的控件，左列不跟着滚
+NO_WHEEL = ("TCombobox", "TSpinbox")              # 左列里这些控件不让滚轮改值（容易误调），滚轮照样滚左列
 DEFAULT_W, DEFAULT_H = 1000, 680    # 默认窗口大小（96 DPI；高分屏按缩放放大）
 MIN_W, MIN_H = 900, 600
 SCREEN_MARGIN = 80         # 任务栏 + 标题栏
-THUMB_W, THUMB_H = 200, 150         # 待办页缩略图
 
 AUTO_PORT = "自动"
 NO_PORT_HINT = "没有找到串口：用数据线连接板子，然后点「重新扫描」"
-DISCONNECTED_PAGE_TEXT = "连接板子后才能推送到屏幕，现在只能预览"
+DISCONNECTED_PAGE_TEXT = "没连接板子，不能推送"
 WX_PREVIEW_NO_CITY = "没有设置城市\n到「设置」标签的天气一栏搜索并选一个城市，这里就能预览天气页。"
 REFRESHING_TEXT = "屏幕刷新中，约 20 秒…"
 REFRESH_TIMEOUT_MS = 45000          # 固件没有「开始刷新」事件：最多等这么久再放开按钮
-REFRESH_RULE_TEXT = "三色屏每次整屏刷新至少间隔 3 分钟，画面有变化才刷新；选项再小也不会更快。"
 WX_PLACEHOLDER = "输入城市名（中文或英文）"
 
 
@@ -941,7 +939,7 @@ def acquire_single_instance(name: str = SINGLE_INSTANCE_MUTEX):
 
 
 class App:
-    """主窗口。左列：连接 / 板子 / 页面 / 设置；右列：屏幕预览·数据明细·待办 + 日志。"""
+    """主窗口。左列（可滚动）：连接 / 页面 / 待办 / 显示设置 / 离线天气页；右列：屏幕预览·数据明细 + 日志。"""
 
     def __init__(self, root, cfg: dict | None = None, config_path: Path | None = None,
                  ports_fn=list_serial_ports, worker_factory=HostWorker, discover_fn=discovery.discover,
@@ -998,12 +996,10 @@ class App:
         self._closing = False
         self._in_tray = False                     # 窗口收在托盘里：不渲染预览，显示时补渲染一次
         self._user_stop = False
-        self._spin_job = None
         self._port_map: dict[str, str] = {}
         self._conn_error = False                  # 工作线程在重试连接
         self.refreshing = False                   # 屏幕正在刷新（命令成功后到 refreshed / 超时）
         self._refresh_job = None
-        self._refresh_src = "page"
         self._push_page: str | None = None        # 「推送到屏幕」已交给工作线程、还没有结果的页面
 
         self.load_error = ""
@@ -1023,8 +1019,6 @@ class App:
         self.page = v2cfg.get("page") if v2cfg.get("page") in todo_page.PAGE_KEYS else "auto"   # 屏幕当前（上次推送 / 保存）
         self.view_page = self.page                # 屏幕预览标签正在看的页面（单选框）；点它不会发给板子
         self._todo_dirty = True                   # 待办改过（或这次运行还没推送过）：推送「待办」页要先推图
-        self.todo_ppm: bytes | None = None        # 最近一次渲染出的待办页（1×）
-        self._todo_thumb = None
         self._todo_busy = False
         self.transport_var_init = cfg.get("transport") if cfg.get("transport") in ("serial", "wifi") else "serial"
 
@@ -1045,8 +1039,6 @@ class App:
             self._show_placeholder("")
             root.update_idletasks()
         root.protocol("WM_DELETE_WINDOW", self.on_window_close)
-        root.bind("<Control-r>", self._on_ctrl_r)
-        root.bind("<Control-R>", self._on_ctrl_r)
         if tray_factory is not None:
             try:
                 self.tray = tray_factory(self.events)
@@ -1134,6 +1126,13 @@ class App:
         label.bind("<Configure>", lambda e, l=label: l.configure(wraplength=max(self.S(240), e.width - 2)))
         return label
 
+    def _grid_when_set(self, label, var, **grid) -> None:
+        """状态行：有文字才占一行，空着不留空白。"""
+        label.grid(**grid)
+        if not var.get():
+            label.grid_remove()
+        var.trace_add("write", lambda *_: label.grid() if var.get() else label.grid_remove())
+
     # -- 构建界面 ----------------------------------------------------------
     def _build(self) -> None:
         tk, ttk = self.tk, self.ttk
@@ -1141,28 +1140,29 @@ class App:
         root.columnconfigure(0, weight=0)
         root.columnconfigure(1, weight=1)
         root.rowconfigure(0, weight=1)
-        left = ttk.Frame(root, padding=(S(12), S(10), S(6), S(10)))
-        left.grid(row=0, column=0, sticky="ns")
-        left.columnconfigure(0, weight=1)
+        left = self._build_scroll_column(root)
         right = ttk.Frame(root, padding=(S(6), S(10), S(12), S(10)))
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
         right.rowconfigure(1, weight=1)
         gap = S(GAP)
 
-        # ---- 连接 ----
-        conn = ttk.LabelFrame(left, text="连接", padding=(S(10), S(6), S(10), S(8)))
-        conn.grid(row=0, column=0, sticky="ew")
+        # ---- 连接（方式 / 地址 / 状态 + 板子信息） ----
+        conn = ttk.LabelFrame(left, text="连接", padding=(S(10), S(4), S(10), S(6)))
+        conn.grid(row=1, column=0, sticky="ew")
         conn.columnconfigure(1, weight=1)
-        ttk.Label(conn, text="方式").grid(row=0, column=0, sticky="w")
         modes = ttk.Frame(conn)
-        modes.grid(row=0, column=1, columnspan=2, sticky="w", padx=S(6))
+        modes.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.transport_var = tk.StringVar(value=self.transport_var_init)
         self.mode_radios = [
             ttk.Radiobutton(modes, text=text, value=key, variable=self.transport_var, command=self.on_transport)
             for text, key in (("USB 串口", "serial"), ("Wi-Fi", "wifi"))]
         for r in self.mode_radios:
-            r.pack(side="left", padx=(0, S(14)))
+            r.pack(side="left", padx=(0, S(10)))
+        self.ota_btn = ttk.Button(modes, text="升级固件…", command=self.start_ota)
+        self.ota_btn.pack(side="right")
+        self.wifi_btn = ttk.Button(modes, text="配网…", command=self.open_wifi_dialog)
+        self.wifi_btn.pack(side="right", padx=(0, S(6)))
         self.addr_label_var = tk.StringVar(value="USB 串口")
         ttk.Label(conn, textvariable=self.addr_label_var).grid(row=1, column=0, sticky="w")
         self.port_var = tk.StringVar()
@@ -1178,44 +1178,34 @@ class App:
         self.conn_hint_var = tk.StringVar()
         self.conn_hint = self._wrap(ttk.Label(conn, textvariable=self.conn_hint_var, style="Muted.TLabel"))
         self.conn_hint.grid(row=2, column=0, columnspan=3, sticky="ew")
-        ttk.Separator(conn).grid(row=3, column=0, columnspan=3, sticky="ew", pady=(S(6), S(4)))
+        self.conn_hint.grid_remove()                     # 有提示才占一行（_update_conn_hint）
         self.dot = tk.Label(conn, text="●", fg=STATE_STYLE["idle"][0], bg=self.colors["bg"], bd=0,
                             font=(self.ui_family, UI_PT + 3))
-        self.dot.grid(row=4, column=0, sticky="w")
+        self.dot.grid(row=3, column=0, sticky="w", pady=(S(2), 0))
         self.status_var = tk.StringVar(value=STATE_STYLE["idle"][1])
         self.status_label = self._wrap(ttk.Label(conn, textvariable=self.status_var, style="Status.TLabel"))
-        self.status_label.grid(row=4, column=1, sticky="ew", padx=S(6))
+        self.status_label.grid(row=3, column=1, sticky="ew", padx=S(6), pady=(S(2), 0))
         self.conn_btn = ttk.Button(conn, text="连接", command=self.toggle_connection)
-        self.conn_btn.grid(row=4, column=2, sticky="ew")
+        self.conn_btn.grid(row=3, column=2, sticky="ew", pady=(S(2), 0))
+        info = ttk.Frame(conn)
+        info.grid(row=4, column=1, columnspan=2, sticky="ew", padx=S(6))
         self.push_var = tk.StringVar(value="上次推送 --:--:--")
-        ttk.Label(conn, textvariable=self.push_var, style="Muted.TLabel").grid(
-            row=5, column=1, columnspan=2, sticky="w", padx=S(6))
-
-        # ---- 板子 ----
-        board = ttk.LabelFrame(left, text="板子", padding=(S(10), S(6), S(10), S(8)))
-        board.grid(row=1, column=0, sticky="ew", pady=(gap, 0))
-        board.columnconfigure(0, weight=1)
+        ttk.Label(info, textvariable=self.push_var, style="Muted.TLabel").pack(side="left")
         self.fw_var = tk.StringVar()
-        ttk.Label(board, textvariable=self.fw_var).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(info, textvariable=self.fw_var).pack(side="left", padx=(S(12), 0))
         self.wifi_var = tk.StringVar()
-        self._wrap(ttk.Label(board, textvariable=self.wifi_var)).grid(row=1, column=0, columnspan=2, sticky="ew",
-                                                                      pady=(S(2), 0))
+        self._wrap(ttk.Label(conn, textvariable=self.wifi_var)).grid(
+            row=5, column=1, columnspan=2, sticky="ew", padx=S(6))
         self.screen_var = tk.StringVar()
-        self.screen_label = self._wrap(ttk.Label(board, textvariable=self.screen_var))
-        self.screen_label.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(S(2), 0))
-        self.ota_bar = ttk.Progressbar(board, mode="determinate", maximum=100)
-        self.ota_bar.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(S(6), 0))
+        self.screen_label = self._wrap(ttk.Label(conn, textvariable=self.screen_var))
+        self.screen_label.grid(row=6, column=1, columnspan=2, sticky="ew", padx=S(6))
+        self.ota_bar = ttk.Progressbar(conn, mode="determinate", maximum=100)
+        self.ota_bar.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(S(6), 0))
         self.ota_bar.grid_remove()
-        btns = ttk.Frame(board)
-        btns.grid(row=4, column=0, columnspan=2, sticky="w", pady=(S(6), 0))
-        self.wifi_btn = ttk.Button(btns, text="配网…", command=self.open_wifi_dialog)
-        self.wifi_btn.pack(side="left")
-        self.ota_btn = ttk.Button(btns, text="升级固件…", command=self.start_ota)
-        self.ota_btn.pack(side="left", padx=(S(8), 0))
 
         # ---- 页面 ----
         pg = ttk.LabelFrame(left, text="页面", padding=(S(10), S(6), S(10), S(8)))
-        pg.grid(row=2, column=0, sticky="ew", pady=(gap, 0))
+        pg.grid(row=3, column=0, sticky="ew", pady=(gap, 0))
         pg.columnconfigure(0, weight=1)
         radios = ttk.Frame(pg)
         radios.grid(row=0, column=0, sticky="w")
@@ -1234,31 +1224,31 @@ class App:
         self.refresh_now_btn.pack(side="left")
         self.resend_btn = ttk.Button(acts, text="重新推送数据", command=self.resend)
         self.resend_btn.pack(side="left", padx=(S(8), 0))
-        ttk.Label(acts, text="Ctrl+R", style="Muted.TLabel").pack(side="left", padx=(S(8), 0))
-        self.page_status_var = tk.StringVar()
-        self._wrap(ttk.Label(pg, textvariable=self.page_status_var, style="Status.TLabel")).grid(
-            row=2, column=0, sticky="ew", pady=(S(6), 0))
-        self.page_board_var = tk.StringVar()
-        self._wrap(ttk.Label(pg, textvariable=self.page_board_var, style="Muted.TLabel")).grid(
-            row=3, column=0, sticky="ew", pady=(S(2), 0))
-        self._wrap(ttk.Label(pg, style="Muted.TLabel",
-                             text="点单选框只切换「屏幕预览」，不会动板子；满意了再点「推送到屏幕」。"
-                                  "「立即刷新屏幕」马上整屏刷新，不受最短间隔限制，刷得太勤会缩短三色屏寿命。"
-                                  "「重新推送数据」让上位机下一轮重发全部数据块。")
-                   ).grid(row=4, column=0, sticky="ew", pady=(S(2), 0))
+        self.page_status_var = tk.StringVar()                  # 只写推送 / 刷新的进度和错误
+        self._grid_when_set(self._wrap(ttk.Label(pg, textvariable=self.page_status_var, style="Status.TLabel")),
+                            self.page_status_var, row=2, column=0, sticky="ew", pady=(S(6), 0))
 
+        # ---- 显示设置（在页面上面）/ 待办 / 离线天气页 ----
+        sets = ttk.LabelFrame(left, text="显示设置", padding=(S(10), S(6), S(10), S(8)))
+        sets.grid(row=2, column=0, sticky="ew", pady=(gap, 0))
+        self._build_display_settings(sets)
+        todo = self._build_todo(left)
+        todo.grid(row=4, column=0, sticky="ew", pady=(gap, 0))
+        wx = ttk.LabelFrame(left, text="离线天气页", padding=(S(10), S(6), S(10), S(8)))
+        wx.grid(row=5, column=0, sticky="ew", pady=(gap, 0))
+        self._build_weather_settings(wx)
+        self._block_value_wheel(left)
+
+        # 保存失败放在左列最上面：左列能滚动，放底下会被滚出视野；没出错时不占位置
         self.save_error_var = tk.StringVar()
-        self._wrap(ttk.Label(left, textvariable=self.save_error_var, style="Err.TLabel")).grid(
-            row=3, column=0, sticky="ew", pady=(S(4), 0))
-        left.rowconfigure(4, weight=1)
+        self._grid_when_set(self._wrap(ttk.Label(left, textvariable=self.save_error_var, style="Err.TLabel")),
+                            self.save_error_var, row=0, column=0, sticky="ew", pady=(0, S(4)))
 
-        # ---- 右列：预览 / 明细 / 待办 + 日志 ----
+        # ---- 右列：屏幕预览 / 数据明细 + 日志 ----
         self.data_tabs = ttk.Notebook(right)
         self.data_tabs.grid(row=0, column=0, sticky="ew")
         self._build_preview_tab()
         self._build_summary_tab()
-        self._build_todo_tab()
-        self._build_settings_tab()
         logf = ttk.LabelFrame(right, text="日志", padding=(S(8), S(4), S(8), S(6)))
         logf.grid(row=1, column=0, sticky="nsew", pady=(gap, 0))
         logf.columnconfigure(0, weight=1)
@@ -1273,18 +1263,56 @@ class App:
         self.log_text.tag_configure("err", foreground=self.colors["err"])
         self._build_log_menu()
 
-    def _build_settings_tab(self) -> None:
-        """右列的「设置」标签：显示设置 + 离线天气页两个分组。"""
-        ttk, S = self.ttk, self.S
-        tab = ttk.Frame(self.data_tabs, padding=(S(8), S(8), S(8), S(6)))
-        self.data_tabs.add(tab, text="设置")
-        tab.columnconfigure(0, weight=1)
-        sets = ttk.LabelFrame(tab, text="显示设置", padding=(S(10), S(6), S(10), S(8)))
-        sets.grid(row=0, column=0, sticky="ew")
-        self._build_display_settings(sets)
-        wx = ttk.LabelFrame(tab, text="离线天气页", padding=(S(10), S(6), S(10), S(8)))
-        wx.grid(row=1, column=0, sticky="ew", pady=(S(GAP), 0))
-        self._build_weather_settings(wx)
+    def _build_scroll_column(self, parent):
+        """左列：Canvas 里放一个 Frame。内容比窗口高时出滚动条；鼠标在左列任意处滚轮都能滚，
+        只有列表、下拉框、数字框自己吃滚轮。返回放内容的 Frame。"""
+        tk, ttk, S = self.tk, self.ttk, self.S
+        outer = ttk.Frame(parent)
+        outer.grid(row=0, column=0, sticky="ns")
+        outer.rowconfigure(0, weight=1)
+        canvas = tk.Canvas(outer, bd=0, highlightthickness=0, bg=self.colors["bg"], width=1, height=S(200),
+                           yscrollincrement=S(24))     # height 只是下限，实际高度跟窗口走
+        canvas.grid(row=0, column=0, sticky="ns")
+        sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        sb.grid(row=0, column=1, sticky="ns", pady=S(10))
+        canvas.configure(yscrollcommand=sb.set)
+        inner = ttk.Frame(canvas, padding=(S(12), S(10), S(6), S(10)))
+        inner.columnconfigure(0, weight=1)
+        canvas.create_window(0, 0, window=inner, anchor="nw")
+
+        def sync(_e=None):
+            w, h = inner.winfo_reqwidth(), inner.winfo_reqheight()
+            canvas.configure(width=w, scrollregion=(0, 0, w, h))
+            if h > canvas.winfo_height():
+                sb.grid()
+            else:
+                sb.grid_remove()
+                canvas.yview_moveto(0)
+        inner.bind("<Configure>", sync)
+        canvas.bind("<Configure>", sync)
+        self.root.bind_all("<MouseWheel>", self._on_left_wheel, add="+")
+        self.left_canvas = canvas
+        return inner
+
+    def _block_value_wheel(self, parent) -> None:
+        """下拉框 / 数字框：滚轮不改值，改成滚左列（控件自己的绑定先于类绑定，返回 break 挡住类绑定）。"""
+        for w in parent.winfo_children():
+            if w.winfo_class() in NO_WHEEL:
+                w.bind("<MouseWheel>", lambda e: (self._on_left_wheel(e), "break")[1])
+            self._block_value_wheel(w)
+
+    def _on_left_wheel(self, event) -> None:
+        canvas = self.left_canvas
+        try:
+            w = self.root.winfo_containing(event.x_root, event.y_root)
+        except (KeyError, self.tk.TclError):       # 指针在下拉列表等弹出窗口上
+            return
+        if w is None or not str(w).startswith(str(canvas)) or w.winfo_class() in OWN_WHEEL:
+            return
+        if canvas.yview() == (0.0, 1.0) or not event.delta:
+            return
+        steps = max(1, abs(event.delta) // 120) * 2
+        canvas.yview_scroll(-steps if event.delta > 0 else steps, "units")
 
     def _build_display_settings(self, sets) -> None:
         tk, ttk, S = self.tk, self.ttk, self.S
@@ -1296,17 +1324,6 @@ class App:
         for key in dashboard_v2.PRIMARIES:
             ttk.Radiobutton(prim, text=PRIMARY_CN.get(key, key), value=key, variable=self.primary_var,
                             command=self.on_primary).pack(side="left", padx=(0, S(10)))
-        lo, hi = dashboard_v2.HEAT_WEEKS
-        weeks = ttk.Frame(sets)
-        weeks.grid(row=0, column=2, sticky="w", padx=(S(16), 0))
-        ttk.Label(weeks, text="活动周数").pack(side="left")
-        self.weeks_var = tk.StringVar(value=str(self.opts["heat_weeks"]))
-        self.weeks_spin = ttk.Spinbox(weeks, from_=lo, to=hi, width=4, textvariable=self.weeks_var,
-                                      command=self._schedule_weeks)
-        self.weeks_spin.pack(side="left", padx=S(6))
-        self.weeks_var.trace_add("write", lambda *_: self._schedule_weeks())
-        self.weeks_spin.bind("<FocusOut>", lambda _e: self._weeks_focus_out())
-        ttk.Label(weeks, text=f"{lo}–{hi}", style="Muted.TLabel").pack(side="left")
         checks = ttk.Frame(sets)
         checks.grid(row=1, column=0, columnspan=3, sticky="w", pady=(S(6), 0))
         self.calendar_var = tk.BooleanVar(value=bool(self.opts["calendar"]))
@@ -1321,15 +1338,13 @@ class App:
                                         values=[refresh_label(m) for m in dashboard_v2.REFRESH_MINUTES])
         self.refresh_box.grid(row=2, column=1, sticky="w", padx=S(6), pady=(S(6), 0))
         self.refresh_box.bind("<<ComboboxSelected>>", lambda _e: self.on_refresh())
-        self._wrap(ttk.Label(sets, style="Muted.TLabel", text=REFRESH_RULE_TEXT), S(460)).grid(
-            row=3, column=0, columnspan=3, sticky="ew", pady=(S(2), 0))
         if self.autostart is not None:
             self.autostart_var = tk.BooleanVar(value=self.autostart.enabled())
             ttk.Checkbutton(sets, text="开机自启（登录后在托盘里运行）", variable=self.autostart_var,
                             command=self.on_autostart).grid(row=4, column=0, columnspan=3, sticky="w", pady=(S(6), 0))
         self.settings_status_var = tk.StringVar()
-        self._wrap(ttk.Label(sets, textvariable=self.settings_status_var, style="Err.TLabel"), S(460)).grid(
-            row=5, column=0, columnspan=3, sticky="ew", pady=(S(2), 0))
+        self._grid_when_set(self._wrap(ttk.Label(sets, textvariable=self.settings_status_var, style="Err.TLabel")),
+                            self.settings_status_var, row=5, column=0, columnspan=3, sticky="ew", pady=(S(2), 0))
 
     def _build_weather_settings(self, wx) -> None:
         tk, ttk, S = self.tk, self.ttk, self.S
@@ -1363,11 +1378,11 @@ class App:
         self.wx_pick_box.bind("<<ComboboxSelected>>", lambda _e: self.on_wx_pick())
         self.wx_pick_box.bind("<Return>", lambda _e: self.on_wx_pick())
         self.wx_place_var = tk.StringVar()
-        self._wrap(ttk.Label(wx, textvariable=self.wx_place_var), S(460)).grid(
+        self._wrap(ttk.Label(wx, textvariable=self.wx_place_var)).grid(
             row=4, column=0, columnspan=2, sticky="ew", pady=(S(6), 0))
         self.wx_status_var = tk.StringVar()
-        self._wrap(ttk.Label(wx, textvariable=self.wx_status_var, style="Muted.TLabel"), S(460)).grid(
-            row=5, column=0, columnspan=2, sticky="ew", pady=(S(2), 0))
+        self._grid_when_set(self._wrap(ttk.Label(wx, textvariable=self.wx_status_var, style="Muted.TLabel")),
+                            self.wx_status_var, row=5, column=0, columnspan=2, sticky="ew", pady=(S(2), 0))
 
     def _build_preview_tab(self) -> None:
         tk, ttk, S = self.tk, self.ttk, self.S
@@ -1408,28 +1423,25 @@ class App:
         self.summary.tag_configure("h", font=self.font_bold, spacing1=6)
         self.summary.tag_configure("muted", foreground=self.colors["muted"])
 
-    def _build_todo_tab(self) -> None:
+    def _build_todo(self, parent):
+        """左列的「待办」分组：列表 + 编辑行。列表有几条就几行高，不自己滚动（左列整体滚）。返回分组，由调用方摆放。"""
         tk, ttk, S = self.tk, self.ttk, self.S
-        td = ttk.Frame(self.data_tabs, padding=(S(8), S(8), S(8), S(6)))
-        self.data_tabs.add(td, text="待办")
+        td = ttk.LabelFrame(parent, text="待办", padding=(S(10), S(6), S(10), S(8)))
         td.columnconfigure(0, weight=1)
         lf = ttk.Frame(td)
         lf.grid(row=0, column=0, sticky="nsew")
         lf.columnconfigure(0, weight=1)
         self.todo_tree = ttk.Treeview(lf, columns=("done", "imp", "text"), show="headings",
-                                      height=TODO_LIST_ROWS, selectmode="browse")
+                                      height=1, selectmode="browse")
         for col, text, width, anchor in (("done", "完成", 48, "center"), ("imp", "重要", 48, "center"),
                                          ("text", "内容", 190, "w")):
             self.todo_tree.heading(col, text=text)
             self.todo_tree.column(col, width=S(width), anchor=anchor, stretch=col == "text")
-        tsb = ttk.Scrollbar(lf, command=self.todo_tree.yview)
-        self.todo_tree.configure(yscrollcommand=tsb.set)
         self.todo_tree.grid(row=0, column=0, sticky="nsew")
-        tsb.grid(row=0, column=1, sticky="ns")
         self.todo_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_todo_select())
         self.todo_tree.bind("<Delete>", lambda _e: self.todo_delete())
         self.todo_tree.bind("<Double-1>", self._on_todo_double)
-        self.todo_empty = tk.Label(self.todo_tree, text="还没有待办。\n在下面输入内容，按 Enter 添加。", justify="center",
+        self.todo_empty = tk.Label(self.todo_tree, text="还没有待办", justify="center",
                                    bg=self.colors["field"], fg=self.colors["muted"], font=self.font_text)
         side = ttk.Frame(td)
         side.grid(row=1, column=0, sticky="w", pady=(S(6), 0))
@@ -1442,11 +1454,8 @@ class App:
             side="left", padx=(S(4), 0))
         ttk.Checkbutton(side, text="重要", variable=self.todo_imp_var, command=self.on_todo_flags).pack(
             side="left", padx=(S(2), 0))
-        self.todo_mode_var = tk.StringVar()
-        self._wrap(ttk.Label(td, textvariable=self.todo_mode_var, style="Muted.TLabel"), S(380)).grid(
-            row=2, column=0, sticky="ew", pady=(S(6), 0))
         edit = ttk.Frame(td)
-        edit.grid(row=3, column=0, sticky="ew", pady=(S(2), 0))
+        edit.grid(row=2, column=0, sticky="ew", pady=(S(6), 0))
         self.todo_text_var = tk.StringVar()
         self.todo_entry = ttk.Entry(edit, textvariable=self.todo_text_var)
         self.todo_entry.pack(side="left", fill="x", expand=True)
@@ -1456,32 +1465,12 @@ class App:
         self.todo_add_btn.pack(side="left", padx=(S(6), 0))
         self.todo_update_btn = ttk.Button(edit, text="保存", command=self.todo_update)
         self.todo_update_btn.pack(side="left", padx=(S(4), 0))
-        # 右侧：待办页缩略图 + 预览 / 推送（不占用主预览标签）
-        pv = ttk.Frame(td)
-        pv.grid(row=0, column=1, rowspan=4, sticky="n", padx=(S(12), 0))
-        self.todo_thumb = tk.Label(pv, bd=1, relief="solid", compound="center", justify="center",
-                                   fg=PAPER_TEXT, bg=PAPER, font=self.font_text,
-                                   text="点「预览」看\n待办页的样子")
-        self._set_todo_thumb_blank()
-        self.todo_thumb.pack()
-        act = ttk.Frame(pv)
-        act.pack(fill="x", pady=(S(6), 0))
-        ttk.Button(act, text="预览", command=self.preview_todo).pack(side="left")
-        self.todo_push_btn = ttk.Button(act, text="推送待办", command=self.push_todo)
-        self.todo_push_btn.pack(side="left", padx=(S(6), 0))
-        self.todo_preview_note_var = tk.StringVar()
-        self._wrap(ttk.Label(pv, textvariable=self.todo_preview_note_var, style="Muted.TLabel"), S(200)).pack(
-            fill="x", pady=(S(4), 0))
+        # 待办页的样子看「屏幕预览」（编辑时自动切过去），推送用「页面」里的「推送到屏幕」
         self.todo_status_var = tk.StringVar()
-        self._wrap(ttk.Label(pv, textvariable=self.todo_status_var, style="Status.TLabel"), S(200)).pack(
-            fill="x", pady=(S(2), 0))
+        self._grid_when_set(self._wrap(ttk.Label(td, textvariable=self.todo_status_var, style="Status.TLabel")),
+                            self.todo_status_var, row=3, column=0, sticky="ew", pady=(S(4), 0))
         self._refresh_todo_tree()
-
-    def _set_todo_thumb_blank(self) -> None:
-        img = self.tk.PhotoImage(master=self.root, width=THUMB_W, height=THUMB_H)
-        img.put(PAPER, to=(0, 0, THUMB_W, THUMB_H))
-        self._todo_thumb = img
-        self.todo_thumb.configure(image=img)
+        return td
 
     def _build_log_menu(self) -> None:
         tk = self.tk
@@ -1575,6 +1564,10 @@ class App:
             hint = "" if sel is None or sel in self._port_map.values() else \
                 f"没有找到 {sel}：确认数据线已连接，再点「重新扫描」。"
         self.conn_hint_var.set(hint)
+        if hint:
+            self.conn_hint.grid()
+        else:
+            self.conn_hint.grid_remove()
 
     # -- 方式 / Wi-Fi 地址 / 搜索 ---------------------------------------------
     def transport(self) -> str:
@@ -1826,8 +1819,7 @@ class App:
         self.worker = self._worker_factory(
             self.cfg, port, self.events, ports_fn=self._ports_fn,
             options={**self.opts, "primary": self.primary_var.get(), "mouse": self.mouse_var.get(),
-                     "calendar": bool(self.calendar_var.get()),
-                     "heat_weeks": self._weeks() or self.opts["heat_weeks"]})
+                     "calendar": bool(self.calendar_var.get())})
         self.worker.start()
         self.conn_btn.configure(text="断开")
         self._lock_inputs(True)
@@ -1856,14 +1848,6 @@ class App:
             self.tray.set_title(f"{TRAY_TITLE} · {text}")
 
     # -- 显示设置 ----------------------------------------------------------
-    def _weeks(self) -> int | None:
-        try:
-            v = int(self.weeks_var.get())
-        except ValueError:
-            return None
-        lo, hi = dashboard_v2.HEAT_WEEKS
-        return v if lo <= v <= hi else None
-
     def _report_save(self, err: str) -> None:
         self.save_error_var.set(f"保存设置失败：{err}。改动只在本次运行里有效。" if err else "")
 
@@ -1907,33 +1891,6 @@ class App:
         if self.worker is not None:
             self.worker.request_options(calendar=calendar)
         self._save(calendar=calendar)
-
-    def _schedule_weeks(self) -> None:
-        if self._spin_job is not None:
-            self.root.after_cancel(self._spin_job)
-        self._spin_job = self.root.after(SPIN_DEBOUNCE_MS, self.on_weeks)
-
-    def _weeks_focus_out(self) -> None:
-        if self._weeks() is None:
-            self.weeks_var.set(str(self.opts["heat_weeks"]))
-            self.settings_status_var.set("")
-
-    def on_weeks(self) -> None:
-        if self._spin_job is not None:
-            self.root.after_cancel(self._spin_job)       # 直接调用时别让排好的那次再来一遍
-            self._spin_job = None
-        weeks = self._weeks()
-        lo, hi = dashboard_v2.HEAT_WEEKS
-        if weeks is None:
-            self.settings_status_var.set(f"活动周数要填 {lo}–{hi} 之间的整数（现在仍是 {self.opts['heat_weeks']}）")
-            return
-        self.settings_status_var.set("")
-        if weeks == self.opts["heat_weeks"]:
-            return
-        self.opts["heat_weeks"] = weeks
-        if self.worker is not None:
-            self.worker.request_options(heat_weeks=weeks)
-        self._save(heat_weeks=weeks)
 
     def on_mouse(self) -> None:
         self.opts["mouse"] = bool(self.mouse_var.get())
@@ -2056,7 +2013,7 @@ class App:
         else:
             self.wx_status_var.set(f"板子没有接受天气设置（{cmd_error_text(str(data))}）")
 
-    # -- 页面 / 立即刷新 / 待办 ----------------------------------------------------
+    # -- 页面 / 推送 / 立即刷新 / 待办 ----------------------------------------------
     def can_send_page(self) -> bool:
         return self.worker is not None and self.link_info[1] == "v2"
 
@@ -2068,12 +2025,6 @@ class App:
         free = self._controls_free()
         self.refresh_now_btn.configure(state="normal" if free else "disabled")
         self.push_page_btn.configure(state="normal" if free and not self._todo_busy else "disabled")
-        self.todo_push_btn.configure(state="normal" if free and not self._todo_busy else "disabled")
-        self.page_board_var.set(f"屏幕当前：{PAGE_CN[self.page]}")
-        if not self.can_send_page() and not self.refreshing:
-            self._set_view_status()                    # 预览那一行 + 断开时的提示
-        elif DISCONNECTED_PAGE_TEXT in self.page_status_var.get():
-            self._set_view_status()
 
     def _send_ui_command(self, tag: str, msg, timeout: float, doing: str) -> bool:
         if not self._controls_free():
@@ -2081,13 +2032,6 @@ class App:
             return False
         self.page_status_var.set(doing)
         return self.send_command(tag, msg, timeout)
-
-    def _set_view_status(self) -> None:
-        v = self.view_page
-        text = f"预览：{PAGE_CN[v]} · " + ("就是屏幕当前的页面" if v == self.page else "还没推送到屏幕")
-        if not self.can_send_page():
-            text += "\n" + DISCONNECTED_PAGE_TEXT
-        self.page_status_var.set(text)
 
     def on_page(self) -> None:
         """点单选框：只切换屏幕预览标签的内容，什么也不发给板子（要推送点「推送到屏幕」）。"""
@@ -2097,11 +2041,10 @@ class App:
         self.view_page = page
         self.data_tabs.select(self.preview_tab)
         self._show_view()
-        if not self.refreshing:                        # 刷新中保留进度文字
-            self._set_view_status()
 
     def push_page(self) -> None:
-        """把选中的页面推给板子：page + refresh_now。待办页要是改过 / 还没推过，先带上待办图（一条命令，只刷新一次）。"""
+        """把选中的页面推给板子并马上刷新：page + refresh_now（不受最短间隔限制）。
+        待办页要是改过 / 还没推过，先带上待办图（一条命令，只刷新一次）。"""
         page = self.page_var.get()
         if page not in todo_page.PAGE_KEYS:
             return
@@ -2110,14 +2053,13 @@ class App:
             return
         if page == "todo" and self._todo_dirty:
             try:
-                frames, img = todo_page.push_frames(self.todo_items, refresh=False)
+                frames, _img = todo_page.push_frames(self.todo_items, refresh=False)
             except ValueError:
                 self.page_status_var.set(page_error_text("too_big"))
                 return
             except Exception as e:  # noqa: BLE001
                 self.page_status_var.set(f"渲染失败：{type(e).__name__}: {e}")
                 return
-            self._show_todo_image(img, f"{_hhmm_ts()} 待办页，已交给板子（{len(frames)} 条消息）")
             self._todo_busy = True
             self._push_page = page
             self.page_status_var.set("推送待办图和页面…")
@@ -2132,20 +2074,14 @@ class App:
         """命令成功：这一页就是屏幕当前的页面，保存到 config。"""
         self.page = page
         self._save(page=page)
-        self.page_board_var.set(f"屏幕当前：{PAGE_CN[page]}")
 
     def refresh_now(self) -> None:
+        """只让屏幕马上整屏刷新当前内容（refresh_now），不换页。"""
         self._send_ui_command("refresh", [todo_page.refresh_now_msg()], 5.0, "已请求立即刷新屏幕…")
-
-    def _on_ctrl_r(self, _event=None) -> str:
-        if self._controls_free():
-            self.refresh_now()
-        return "break"
 
     def _begin_refresh(self, src: str) -> None:
         """命令成功后：固件没有「开始刷新」事件，自己进入「刷新中」，等 refreshed 或超时。"""
         self.refreshing = True
-        self._refresh_src = src
         if self._refresh_job is not None:
             self.root.after_cancel(self._refresh_job)
         self._refresh_job = self.root.after(REFRESH_TIMEOUT_MS, lambda: self._end_refresh(None))
@@ -2164,8 +2100,6 @@ class App:
         self._update_page_ui()
 
     def _set_refresh_text(self, text: str) -> None:
-        if self._refresh_src == "todo":
-            self.todo_status_var.set(text)
         self.page_status_var.set(text)
 
     def _on_ui_cmd(self, tag: str, res: dict) -> None:
@@ -2180,10 +2114,7 @@ class App:
                     self._page_pushed(pushed)
                 self._begin_refresh("todo")
             else:
-                self.todo_status_var.set(page_error_text(res.get("err", "")))
-                if pushed:
-                    self.page_status_var.set(page_error_text(res.get("err", "")))
-                self.todo_preview_note_var.set("没有送达：屏幕仍是旧内容")
+                self.page_status_var.set(page_error_text(res.get("err", "")))
                 log.warning("推送待办失败：%s", res.get("err") or "未知")
                 self._update_page_ui()
             return
@@ -2202,13 +2133,14 @@ class App:
         t.delete(*t.get_children())
         for i, it in enumerate(self.todo_items):
             t.insert("", "end", iid=str(i), values=todo_row(it))
+        t.configure(height=max(1, len(self.todo_items)))      # 有几条就几行高，加一条长一行
         if select is not None and 0 <= select < len(self.todo_items):
             t.selection_set(str(select))
             t.see(str(select))
         if self.todo_items:
             self.todo_empty.place_forget()
         else:
-            self.todo_empty.place(relx=0.5, rely=0.5, anchor="center")
+            self.todo_empty.place(relx=0.5, rely=1.0, y=-self.S(2), anchor="s")   # 放在唯一那一行里，不压住表头
         self._on_todo_select()
 
     def _selected_todo(self) -> int | None:
@@ -2218,12 +2150,6 @@ class App:
     def _update_todo_mode(self) -> None:
         i = self._selected_todo()
         full = len(self.todo_items) >= todo_page.ITEMS_MAX
-        if i is not None:
-            self.todo_mode_var.set(f"正在编辑第 {i + 1} 条：Enter 保存修改，Esc 取消（回到新增）")
-        elif full:
-            self.todo_mode_var.set(f"已有 {todo_page.ITEMS_MAX} 条（最多 {todo_page.ITEMS_MAX} 条），删掉一些才能再添加")
-        else:
-            self.todo_mode_var.set("新增事项：输入内容后按 Enter 添加；选中一行可修改（双击或 Enter 编辑，Delete 删除）")
         self.todo_update_btn.configure(state="normal" if i is not None else "disabled")
         self.todo_add_btn.configure(state="disabled" if full else "normal")
 
@@ -2258,6 +2184,9 @@ class App:
         self._refresh_todo_tree(select)
         if self.view_page == "todo":
             self._show_todo_view()
+        else:                                          # 改了待办就在「屏幕预览」里看待办页（只预览，不推送）
+            self.page_var.set("todo")
+            self.on_page()
 
     def todo_commit(self) -> None:
         """输入框里按 Enter：选中了一行 = 保存修改，否则 = 添加。"""
@@ -2319,45 +2248,6 @@ class App:
         self.todo_items[i]["done"] = bool(self.todo_done_var.get())
         self.todo_items[i]["important"] = bool(self.todo_imp_var.get())
         self._save_todo(i)
-
-    # 待办预览（缩略图在待办标签里，不占主预览）/ 推送
-    def _show_todo_image(self, img, note: str) -> None:
-        self.todo_ppm = todo_page.to_ppm(img)
-        try:
-            from PIL import Image
-            thumb = todo_page.to_ppm(img.convert("RGB").resize((THUMB_W, THUMB_H), Image.LANCZOS))
-            self._todo_thumb = self.tk.PhotoImage(master=self.root, data=thumb, format="ppm")
-            self.todo_thumb.configure(image=self._todo_thumb, text="")
-        except Exception:  # noqa: BLE001 - 缩略图失败不影响推送
-            pass
-        self.todo_preview_note_var.set(note)
-
-    def preview_todo(self) -> None:
-        try:
-            black, red = todo_page.render_todo(self.todo_items)
-        except Exception as e:  # noqa: BLE001 - 字体 / Pillow 出问题只提示
-            self.todo_status_var.set(f"渲染失败：{type(e).__name__}: {e}")
-            return
-        self._show_todo_image(todo_page.to_rgb(black, red), f"{_hhmm_ts()} 待办页预览（还没有推送）")
-
-    def push_todo(self) -> None:
-        if not self._controls_free():
-            self.todo_status_var.set(DISCONNECTED_PAGE_TEXT.replace("推送到屏幕", "推送待办")
-                                     if not self.can_send_page() else "屏幕刷新中，稍等…")
-            return
-        try:
-            frames, img = todo_page.push_frames(self.todo_items)
-        except ValueError:
-            self.todo_status_var.set(page_error_text("too_big"))
-            return
-        except Exception as e:  # noqa: BLE001
-            self.todo_status_var.set(f"渲染失败：{type(e).__name__}: {e}")
-            return
-        self._show_todo_image(img, f"{_hhmm_ts()} 待办页，已交给板子（{len(frames) - 2} 条消息）")
-        self._todo_busy = True
-        self.todo_status_var.set("推送中…")
-        self.send_command("todo", frames, 8.0)
-        self._update_page_ui()
 
     def resend(self) -> None:
         if self.worker is None:
@@ -2761,10 +2651,10 @@ class App:
 
     def on_close(self) -> None:
         self._closing = True
-        for job in (self._spin_job, self._preview_job, self._refresh_job):
+        for job in (self._preview_job, self._refresh_job):
             if job is not None:
                 self.root.after_cancel(job)
-        self._spin_job = self._preview_job = self._refresh_job = None
+        self._preview_job = self._refresh_job = None
         if self._poll_job is not None:
             self.root.after_cancel(self._poll_job)
             self._poll_job = None

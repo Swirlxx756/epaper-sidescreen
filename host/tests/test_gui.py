@@ -1534,8 +1534,7 @@ class AppPageViewTests(AppTestBase):
         self.assertEqual(str(app.preview_label.cget("text")), "")
         self.assertEqual(app._preview_img.width(), 400 * app.preview_scale)
         self.assertIn("天气页", app.preview_note_var.get())
-        self.assertEqual(app.page_status_var.get(), "预览：天气 · 还没推送到屏幕")      # 连着板子：没有断开提示
-        self.assertEqual(app.page_board_var.get(), "屏幕当前：自动")
+        self.assertEqual(app.page_status_var.get(), "")                # 只是预览：没有状态文字
         self.assertEqual(w.commands, [])                              # 什么也没发
         self.assertFalse(self.path.exists())                          # 也没写 config
         self.assertEqual(len(self.urls), 1)
@@ -1562,8 +1561,6 @@ class AppPageViewTests(AppTestBase):
             self.select(app, page)
             self.assertIs(app._shown_ppm(), app.preview_ppm)
             self.assertIn("按固件绘图代码渲染", app.preview_note_var.get())
-            self.assertIn(f"预览：{gui.PAGE_CN[page]} · " +
-                          ("就是屏幕当前的页面" if page == "auto" else "还没推送到屏幕"), app.page_status_var.get())
         self.assertEqual(len(read_records(self.record)), 2)           # 一次仪表盘，一次天气；切换不重画仪表盘
 
     def test_dashboard_updates_while_looking_at_weather_do_not_overwrite_it(self):
@@ -1583,7 +1580,6 @@ class AppPageViewTests(AppTestBase):
         self.assertIs(app._shown_ppm(), app._todo_view_ppm)
         self.assertEqual(str(app.preview_label.cget("text")), "")
         self.assertIn("待办页", app.preview_note_var.get())
-        self.assertIn("预览：待办 · 还没推送到屏幕", app.page_status_var.get())
         self.assertEqual(read_records(self.record), [])               # 待办页不经过渲染器
         app.scale_var.set(2)
         app.on_preview_scale()
@@ -1627,10 +1623,9 @@ class AppPageViewTests(AppTestBase):
         items = [{"text": "写周报", "done": False, "important": False}]
         app = self.make(v2={"page": "todo", "todo": {"items": items}})
         self.assertEqual((app.page, app.view_page, app.page_var.get()), ("todo", "todo", "todo"))
-        self.assertEqual(app.page_board_var.get(), "屏幕当前：待办")
         self.assertIs(app._shown_ppm(), app._todo_view_ppm)
         self.assertIsNotNone(app._todo_view_ppm)
-        self.assertIn(gui.DISCONNECTED_PAGE_TEXT, app.page_status_var.get())
+        self.assertEqual(str(app.push_page_btn.cget("state")), "disabled")          # 没连板子不能推送
 
 
 class FakeReg:
@@ -1837,11 +1832,18 @@ class AppLayoutTests(AppTestBase):
     def test_two_columns_and_fits_default_window(self):
         app = self.make()
         self.root.update_idletasks()
-        self.assertEqual(int(app.conn_btn.master.master.grid_info()["column"]), 0)       # 左列：连接 / 板子 / 页面 / 设置
+        self.assertEqual(int(app.left_canvas.master.grid_info()["column"]), 0)            # 左列（可滚动）
+        for w in (app.conn_btn, app.page_radios[0], app.todo_tree, app.refresh_box, app.wx_city_entry):
+            self.assertTrue(str(w).startswith(str(app.left_canvas)), w)                   # 连接 / 页面 / 待办 / 设置
+        rows = [int(f.grid_info()["row"]) for f in (app.conn_btn.master, app.refresh_box.master,
+                                                     app.page_radios[0].master.master, app.todo_tree.master.master)]
+        self.assertEqual(rows, sorted(rows))                                              # 连接 / 显示设置 / 页面 / 待办
+        for w in (app.refresh_box, app.wx_after_spin, app.wx_pick_box, app.addr_box):
+            self.assertTrue(w.bind("<MouseWheel>"), w)                                    # 滚轮不改值，改成滚左列
         self.assertLessEqual(self.root.winfo_reqheight(), app.S(gui.DEFAULT_H) + 40)       # 不是 900 像素的单列
         self.assertLessEqual(self.root.winfo_reqwidth(), app.S(gui.DEFAULT_W) + 40)
         self.assertEqual(int(app.data_tabs.master.grid_info()["column"]), 1)               # 右列：预览 + 日志
-        self.assertEqual([app.data_tabs.tab(i, "text") for i in range(4)], ["屏幕预览", "数据明细", "待办", "设置"])
+        self.assertEqual([app.data_tabs.tab(t, "text") for t in app.data_tabs.tabs()], ["屏幕预览", "数据明细"])
 
     def test_empty_port_list_shows_hint_and_auto_entry(self):
         app = self.make()
@@ -1931,14 +1933,6 @@ class AppLayoutTests(AppTestBase):
         app.wx_pick_box.current(0)
         app.on_wx_pick()
         self.assertTrue(app.wx_place_var.get().startswith("已保存：上海"))
-
-    def test_weeks_validation_message(self):
-        app = self.make()
-        app.weeks_var.set("99")
-        app.on_weeks()
-        self.assertIn("4–26", app.settings_status_var.get())
-        app._weeks_focus_out()
-        self.assertEqual(app.weeks_var.get(), str(app.opts["heat_weeks"]))
 
     def test_log_menu_copy_and_clear(self):
         app = self.make()
