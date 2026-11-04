@@ -1372,20 +1372,11 @@ class AppPreviewTests(AppTestBase):
         self.assertTrue(self.pump(lambda: "渲染失败" in app.preview_note_var.get(), RENDER_WAIT_S))
         self.assertIsNone(app.preview_ppm)
 
-    def test_scale_switch_zooms_and_is_saved(self):
-        app = self.make(renderer=fake_render_cmd(self.record), preview_scale=1)
-        self.assertEqual(app.preview_scale, 1)
+    def test_preview_is_always_2x(self):
+        app = self.make(renderer=fake_render_cmd(self.record), preview_scale=1)    # 旧配置里的 1 不再生效
         self.push_all()
         self.assertTrue(self.pump(lambda: app.preview_ppm is not None, RENDER_WAIT_S))
-        app.scale_var.set(2)
-        app.on_preview_scale()
         self.assertEqual((app._preview_img.width(), app._preview_img.height()), (800, 600))
-        self.assertEqual(self.read()["preview_scale"], 2)
-        self.assertEqual(len(read_records(self.record)), 1)          # 缩放不用重新渲染
-
-    def test_saved_scale_is_used(self):
-        app = self.make(preview_scale=2)
-        self.assertEqual((app.preview_scale, app.scale_var.get()), (2, 2))
 
     def test_summary_tab_marks_headings(self):
         app = self.make()
@@ -1581,8 +1572,6 @@ class AppPageViewTests(AppTestBase):
         self.assertEqual(str(app.preview_label.cget("text")), "")
         self.assertIn("待办页", app.preview_note_var.get())
         self.assertEqual(read_records(self.record), [])               # 待办页不经过渲染器
-        app.scale_var.set(2)
-        app.on_preview_scale()
         self.assertEqual(app._preview_img.width(), 800)
 
     def test_weather_without_city_and_with_failed_fetch_show_text_in_preview_area(self):
@@ -1840,8 +1829,9 @@ class AppLayoutTests(AppTestBase):
         self.assertEqual(rows, sorted(rows))                                              # 连接 / 显示设置 / 页面 / 待办
         for w in (app.refresh_box, app.wx_after_spin, app.wx_pick_box, app.addr_box):
             self.assertTrue(w.bind("<MouseWheel>"), w)                                    # 滚轮不改值，改成滚左列
-        self.assertLessEqual(self.root.winfo_reqheight(), app.S(gui.DEFAULT_H) + 40)       # 不是 900 像素的单列
-        self.assertLessEqual(self.root.winfo_reqwidth(), app.S(gui.DEFAULT_W) + 40)
+        # 预览固定 2×：图片比 1× 宽 400、高 300 像素（图片像素不随 DPI 缩放），其余部分仍在默认大小以内
+        self.assertLessEqual(self.root.winfo_reqheight(), app.S(gui.DEFAULT_H) + 300 + 40)   # 不是单列
+        self.assertLessEqual(self.root.winfo_reqwidth(), app.S(gui.DEFAULT_W) + 400 + 40)
         self.assertEqual(int(app.data_tabs.master.grid_info()["column"]), 1)               # 右列：预览 + 日志
         self.assertEqual([app.data_tabs.tab(t, "text") for t in app.data_tabs.tabs()], ["屏幕预览", "数据明细"])
 

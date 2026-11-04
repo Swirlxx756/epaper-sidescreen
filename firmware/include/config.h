@@ -171,4 +171,4 @@ static_assert(EPD_TRI_PROFILE >= 0 && EPD_TRI_PROFILE <= 3, "EPD_TRI_PROFILE mus
 //   1.7.0  robustness: display fault -> sleep commands + auto reboot (max 3 in a row), TCP replies in one write +
 //          keepalive, a running upgrade / image transfer keeps its connection, weather fetch watchdog + bounded
 //          body, weather config in one NVS blob, unchanged TODO image not rewritten, OTA confirm retried
-#define FW_VERSION "1.7.0"
+#define FW_VERSION "1.7.1"

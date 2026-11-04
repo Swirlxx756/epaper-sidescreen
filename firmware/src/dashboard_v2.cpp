@@ -125,8 +125,8 @@ void drawBattery(Painter& p, int x, int y, int pct, uint16_t ink) {
 }
 
 // Mouse: battery icon + percent, ending at xRight. Low battery = accent icon;
-// stale = percent in an inverted box; charging = CHG left of the icon;
-// off / na = hollow battery and "--".
+// stale = percent in an inverted box; charging = small lightning bolt right of
+// the percent (the rest moves left to make room); off / na = hollow battery and "--".
 void drawMouseStatus(Painter& p, const Mouse& m, int xRight, int base) {
   bool off = m.got && m.st == ST_OFF;
   bool na = m.got && m.st == ST_NA;
@@ -134,6 +134,15 @@ void drawMouseStatus(Painter& p, const Mouse& m, int xRight, int base) {
   bool alert = m.got && m.st == ST_OK && pct >= 0 && pct <= 15;
   bool stale = m.got && m.st == ST_STALE;
 
+  if (m.got && m.st == ST_OK && m.chg) {  // 6 x 9 zigzag bolt, bottom row on the baseline
+    static const char* kBolt[9] = {"...###", "..###.", ".###..", "######", "..###.",
+                                   ".###..", ".##...", "##....", "#....."};
+    int bx = xRight - 6, by = base - 8;
+    for (int r = 0; r < 9; r++)
+      for (int c = 0; c < 6; c++)
+        if (kBolt[r][c] == '#') p.g.drawPixel(bx + c, by + r, BLACK);
+    xRight -= 9;
+  }
   char txt[8];
   if (pct >= 0) snprintf(txt, sizeof(txt), "%d%%", pct);
   else snprintf(txt, sizeof(txt), "--");
@@ -147,7 +156,6 @@ void drawMouseStatus(Painter& p, const Mouse& m, int xRight, int base) {
   }
   int iconX = xRight - tw - 6 - 22;
   drawBattery(p, iconX, base - 9, pct, alert ? p.style.accent : BLACK);
-  if (m.got && m.st == ST_OK && m.chg) p.right(F_B8, iconX - 5, base, "CHG");
 }
 
 // Connection icon centred on (cx, cy): online = solid dot in a ring; offline =

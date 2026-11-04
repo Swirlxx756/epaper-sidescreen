@@ -517,7 +517,7 @@ STATE_STYLE = {   # state -> (圆点颜色, 默认文字)
 BEZEL = "#3c3f44"          # 预览外框（像屏幕的边框；墨水屏本身就是这个纸色，明暗主题下都不变）
 PAPER = "#f4f4f1"          # 墨水屏的纸色
 PAPER_TEXT = "#555555"     # 纸色底上的说明文字
-PREVIEW_SCALES = (1, 2)
+PREVIEW_SCALE = 2          # 屏幕预览固定放大 2 倍
 LOG_FONTS = ("Cascadia Mono", "Consolas")
 UI_FONT = "Microsoft YaHei UI"
 UI_PT = 10
@@ -618,17 +618,6 @@ def center_over(top, parent) -> None:
     else:
         x, y = (top.winfo_screenwidth() - w) // 2, (top.winfo_screenheight() - h) // 3
     top.geometry(f"+{max(0, x)}+{max(0, y)}")
-
-
-def default_preview_scale(root, width_1x: int, height_1x: int) -> int:
-    """高分屏（约 150% 缩放起，Tk 报 143.9 DPI）且屏幕放得下时默认 2×，否则 1×。
-    width_1x / height_1x = 预览按 1× 摆好时窗口要的宽高；2× 再宽 400、再高 300 像素。"""
-    try:
-        fits = (height_1x + 300 <= root.winfo_screenheight() - SCREEN_MARGIN
-                and width_1x + 400 <= root.winfo_screenwidth())
-        return 2 if root.winfo_fpixels("1i") >= 140 and fits else 1
-    except Exception:  # noqa: BLE001
-        return 1
 
 
 def list_serial_ports() -> list:
@@ -1027,18 +1016,13 @@ class App:
         attach_log_handler(self.log_handler)
 
         root.title("墨水屏副屏 · 上位机")
-        scale = cfg.get("preview_scale")
-        self.preview_scale = scale if scale in PREVIEW_SCALES else 1
+        self._set_window_icon()
+        self.preview_scale = PREVIEW_SCALE
         self._setup_style()
         root.minsize(self.S(MIN_W), self.S(MIN_H))
         self._build()
         self._show_placeholder("")
         root.update_idletasks()
-        if scale not in PREVIEW_SCALES:
-            self.preview_scale = default_preview_scale(root, root.winfo_reqwidth(), root.winfo_reqheight())
-            self.scale_var.set(self.preview_scale)
-            self._show_placeholder("")
-            root.update_idletasks()
         root.protocol("WM_DELETE_WINDOW", self.on_window_close)
         if tray_factory is not None:
             try:
@@ -1133,6 +1117,15 @@ class App:
         if not var.get():
             label.grid_remove()
         var.trace_add("write", lambda *_: label.grid() if var.get() else label.grid_remove())
+
+    def _set_window_icon(self) -> None:
+        """窗口和任务栏的图标：和托盘一样的小屏幕（不设的话是 Tk 默认的羽毛）。"""
+        try:
+            from PIL import ImageTk
+            self._window_icons = [ImageTk.PhotoImage(tray_image(s), master=self.root) for s in (64, 32, 16)]
+            self.root.iconphoto(True, *self._window_icons)
+        except Exception:  # noqa: BLE001 - 没有 Pillow 就用默认图标
+            pass
 
     # -- 构建界面 ----------------------------------------------------------
     def _build(self) -> None:
@@ -1397,13 +1390,8 @@ class App:
         self.preview_label.pack()
         row = ttk.Frame(pv)
         row.grid(row=1, column=0, sticky="ew", pady=(S(8), 0))
-        self.scale_var = tk.IntVar(value=self.preview_scale)
-        for s in reversed(PREVIEW_SCALES):
-            ttk.Radiobutton(row, text=f"{s}×", value=s, variable=self.scale_var,
-                            command=self.on_preview_scale).pack(side="right", padx=(S(8), 0))
-        ttk.Label(row, text="缩放", style="Muted.TLabel").pack(side="right")
         self.refresh_data_btn = ttk.Button(row, text="立即刷新数据", command=self.refresh_data)
-        self.refresh_data_btn.pack(side="right", padx=(0, S(12)))
+        self.refresh_data_btn.pack(side="right")
         self.preview_note_var = tk.StringVar()
         self._wrap(ttk.Label(row, textvariable=self.preview_note_var, style="Muted.TLabel"), S(420)).pack(
             side="left", fill="x", expand=True)
@@ -2584,23 +2572,6 @@ class App:
         self._preview_img = img
         self.preview_label.configure(image=img, text=text, wraplength=w - 40)
 
-    def on_preview_scale(self) -> None:
-        scale = int(self.scale_var.get())
-        if scale == self.preview_scale:
-            return
-        self.preview_scale = scale
-        self.cfg["preview_scale"] = scale
-        self._save_top(preview_scale=scale)
-        if self._shown_ppm() is not None:
-            self._show_preview_image()
-        elif self._dash_view():
-            self._start_preview()
-        elif self.view_page == "weather":
-            self._show_placeholder(self.wx_text or "正在拉取天气…")
-        else:
-            self._show_todo_view()
-        self._fit_window()
-
     def _fit_window(self) -> None:
         """窗口放不下内容时撑大，但不超出屏幕（必要时往上 / 往左挪）；用户拉大的窗口不缩回去。"""
         root = self.root
@@ -2721,6 +2692,12 @@ def main(argv: list[str] | None = None) -> int:
             r.destroy()
         return 0
     enable_dpi_awareness()     # 必须在创建 Tk 之前
+    if sys.platform == "win32":    # 任务栏按自己的身份分组，显示窗口图标，而不是 pythonw 的图标
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EpaperSidescreen.Host")
+        except (OSError, AttributeError):
+            pass
     root = tk.Tk()
     apply_tk_scaling(root)
     autostart = None
