@@ -1000,7 +1000,8 @@ class App:
         self._conn_error = False                  # 工作线程在重试连接
         self.refreshing = False                   # 屏幕正在刷新（命令成功后到 refreshed / 超时）
         self._refresh_job = None
-        self._push_page: str | None = None        # 「推送到屏幕」已交给工作线程、还没有结果的页面
+        self._push_page: str | None = None        # 「推送」/「立即推送」已交给工作线程、还没有结果的页面
+        self._push_refresh = False                # 这次推送带不带 refresh_now（立即推送）
 
         self.load_error = ""
         if cfg is None:
@@ -1218,12 +1219,11 @@ class App:
             r.pack(side="left", padx=(0, S(8)))
         acts = ttk.Frame(pg)
         acts.grid(row=1, column=0, sticky="w", pady=(S(6), 0))
-        self.push_page_btn = ttk.Button(acts, text="推送到屏幕", style="Accent.TButton", command=self.push_page)
+        self.push_page_btn = ttk.Button(acts, text="推送", style="Accent.TButton",
+                                        command=lambda: self.push_page(refresh=False))
         self.push_page_btn.pack(side="left", padx=(0, S(8)))
-        self.refresh_now_btn = ttk.Button(acts, text="立即刷新屏幕", command=self.refresh_now)
-        self.refresh_now_btn.pack(side="left")
-        self.resend_btn = ttk.Button(acts, text="重新推送数据", command=self.resend)
-        self.resend_btn.pack(side="left", padx=(S(8), 0))
+        self.push_now_btn = ttk.Button(acts, text="立即推送", command=self.push_page)
+        self.push_now_btn.pack(side="left")
         self.page_status_var = tk.StringVar()                  # 只写推送 / 刷新的进度和错误
         self._grid_when_set(self._wrap(ttk.Label(pg, textvariable=self.page_status_var, style="Status.TLabel")),
                             self.page_status_var, row=2, column=0, sticky="ew", pady=(S(6), 0))
@@ -1402,6 +1402,8 @@ class App:
             ttk.Radiobutton(row, text=f"{s}×", value=s, variable=self.scale_var,
                             command=self.on_preview_scale).pack(side="right", padx=(S(8), 0))
         ttk.Label(row, text="缩放", style="Muted.TLabel").pack(side="right")
+        self.refresh_data_btn = ttk.Button(row, text="立即刷新数据", command=self.refresh_data)
+        self.refresh_data_btn.pack(side="right", padx=(0, S(12)))
         self.preview_note_var = tk.StringVar()
         self._wrap(ttk.Label(row, textvariable=self.preview_note_var, style="Muted.TLabel"), S(420)).pack(
             side="left", fill="x", expand=True)
@@ -1465,7 +1467,7 @@ class App:
         self.todo_add_btn.pack(side="left", padx=(S(6), 0))
         self.todo_update_btn = ttk.Button(edit, text="保存", command=self.todo_update)
         self.todo_update_btn.pack(side="left", padx=(S(4), 0))
-        # 待办页的样子看「屏幕预览」（编辑时自动切过去），推送用「页面」里的「推送到屏幕」
+        # 待办页的样子看「屏幕预览」（编辑时自动切过去），推送用「页面」里的「推送」/「立即推送」
         self.todo_status_var = tk.StringVar()
         self._grid_when_set(self._wrap(ttk.Label(td, textvariable=self.todo_status_var, style="Status.TLabel")),
                             self.todo_status_var, row=3, column=0, sticky="ew", pady=(S(4), 0))
@@ -1691,7 +1693,6 @@ class App:
         self.wifi_var.set("Wi-Fi：" + self.wifi_text())
         self.wifi_btn.configure(state="normal" if self.can_provision() else "disabled")
         self.ota_btn.configure(state="normal" if self.can_ota() else "disabled")
-        self.resend_btn.configure(state="normal" if self.worker is not None else "disabled")
         self._update_page_ui()
         if self.wifi_dialog is not None:
             self.wifi_dialog.set_connected(self.can_provision())
@@ -2023,8 +2024,8 @@ class App:
 
     def _update_page_ui(self) -> None:
         free = self._controls_free()
-        self.refresh_now_btn.configure(state="normal" if free else "disabled")
-        self.push_page_btn.configure(state="normal" if free and not self._todo_busy else "disabled")
+        for b in (self.push_page_btn, self.push_now_btn):
+            b.configure(state="normal" if free and not self._todo_busy else "disabled")
 
     def _send_ui_command(self, tag: str, msg, timeout: float, doing: str) -> bool:
         if not self._controls_free():
@@ -2034,7 +2035,7 @@ class App:
         return self.send_command(tag, msg, timeout)
 
     def on_page(self) -> None:
-        """点单选框：只切换屏幕预览标签的内容，什么也不发给板子（要推送点「推送到屏幕」）。"""
+        """点单选框：只切换屏幕预览标签的内容，什么也不发给板子（要推送点「推送」/「立即推送」）。"""
         page = self.page_var.get()
         if page not in todo_page.PAGE_KEYS:
             return
@@ -2042,15 +2043,19 @@ class App:
         self.data_tabs.select(self.preview_tab)
         self._show_view()
 
-    def push_page(self) -> None:
-        """把选中的页面推给板子并马上刷新：page + refresh_now（不受最短间隔限制）。
-        待办页要是改过 / 还没推过，先带上待办图（一条命令，只刷新一次）。"""
+    def push_page(self, refresh: bool = True) -> None:
+        """「推送」(refresh=False)：把选中的页面发给板子，全部数据块下一轮重发，屏幕按刷新间隔自己更新。
+        「立即推送」(refresh=True)：同样发送，再加 refresh_now 让屏幕马上整屏刷新（不受最短间隔限制）。
+        待办页要是改过 / 还没推过，先带上待办图（一条命令，最多刷新一次）。"""
         page = self.page_var.get()
         if page not in todo_page.PAGE_KEYS:
             return
         if not self._controls_free():
             self.page_status_var.set(DISCONNECTED_PAGE_TEXT if not self.can_send_page() else "屏幕刷新中，稍等…")
             return
+        tail = [todo_page.page_msg(page)] + ([todo_page.refresh_now_msg()] if refresh else [])
+        self._push_refresh = refresh
+        self.worker.request_reset()                    # 顺便把全部数据块重发一遍（原来的「重新推送数据」）
         if page == "todo" and self._todo_dirty:
             try:
                 frames, _img = todo_page.push_frames(self.todo_items, refresh=False)
@@ -2063,11 +2068,10 @@ class App:
             self._todo_busy = True
             self._push_page = page
             self.page_status_var.set("推送待办图和页面…")
-            self.send_command("todo", [*frames, todo_page.page_msg(page), todo_page.refresh_now_msg()], 8.0)
+            self.send_command("todo", [*frames, *tail], 8.0)
             self._update_page_ui()
             return
-        if self._send_ui_command("page", [todo_page.page_msg(page), todo_page.refresh_now_msg()], 8.0,
-                                 f"推送「{PAGE_CN[page]}」到屏幕…"):
+        if self._send_ui_command("page", tail, 8.0, f"推送「{PAGE_CN[page]}」…"):
             self._push_page = page
 
     def _page_pushed(self, page: str) -> None:
@@ -2075,9 +2079,9 @@ class App:
         self.page = page
         self._save(page=page)
 
-    def refresh_now(self) -> None:
-        """只让屏幕马上整屏刷新当前内容（refresh_now），不换页。"""
-        self._send_ui_command("refresh", [todo_page.refresh_now_msg()], 5.0, "已请求立即刷新屏幕…")
+    def _pushed_without_refresh(self, page: str | None) -> None:
+        self.page_status_var.set(f"已推送「{PAGE_CN[page or self.page]}」{_hhmm_ts()}，屏幕按刷新间隔更新")
+        self._update_page_ui()
 
     def _begin_refresh(self, src: str) -> None:
         """命令成功后：固件没有「开始刷新」事件，自己进入「刷新中」，等 refreshed 或超时。"""
@@ -2112,7 +2116,10 @@ class App:
                 self._todo_dirty = False
                 if pushed:
                     self._page_pushed(pushed)
-                self._begin_refresh("todo")
+                if self._push_refresh:
+                    self._begin_refresh("todo")
+                else:
+                    self._pushed_without_refresh(pushed)
             else:
                 self.page_status_var.set(page_error_text(res.get("err", "")))
                 log.warning("推送待办失败：%s", res.get("err") or "未知")
@@ -2121,7 +2128,10 @@ class App:
         if res.get("ok"):
             if tag == "page" and pushed:
                 self._page_pushed(pushed)
-            self._begin_refresh(tag)
+            if self._push_refresh:
+                self._begin_refresh(tag)
+            else:
+                self._pushed_without_refresh(pushed)
         else:
             self.page_status_var.set(page_error_text(res.get("err", "")))
             log.info("%s 命令没有成功：%s", tag, res.get("err") or "未知")
@@ -2249,13 +2259,6 @@ class App:
         self.todo_items[i]["important"] = bool(self.todo_imp_var.get())
         self._save_todo(i)
 
-    def resend(self) -> None:
-        if self.worker is None:
-            log.info("未连接，无可重发的内容")
-            return
-        self.worker.request_reset()
-        log.info("下一轮会重新推送全部数据")
-
     # -- 轮询 --------------------------------------------------------------
     def _poll(self) -> None:
         if self._closing:
@@ -2305,7 +2308,7 @@ class App:
                     self._on_auto_status(ev[2])
                 elif ev[1] == "auto_pair":
                     self._on_auto_pair(ev[2])
-                elif ev[1] in ("todo", "page", "refresh"):
+                elif ev[1] in ("todo", "page"):
                     self._on_ui_cmd(ev[1], ev[2])
                 elif self.wifi_dialog is not None:
                     self.wifi_dialog.handle(ev)
@@ -2341,6 +2344,9 @@ class App:
                 elif ev[1] == "quit":
                     if self.request_quit():
                         return
+            elif kind == "local_msgs":
+                if self._on_local_msgs(ev[1], ev[2]):
+                    changed = True
             elif kind == "preview":
                 self._on_preview(ev[1], ev[2])
             elif kind == "wxpreview":
@@ -2422,6 +2428,36 @@ class App:
             t.insert("end", line, tag)
         t.configure(state="disabled")
         self._schedule_preview()
+
+    def refresh_data(self) -> None:
+        """立即刷新数据：马上重读 Token Monitor 文件，按当前显示设置重算数据块，只更新屏幕预览和数据明细，
+        什么也不发给板子（板子照常按推送节奏拿数据）。鼠标沿用最近一次推送的那条（读鼠标要等接收器的报告）。"""
+        self.refresh_data_btn.configure(state="disabled")
+        o = self.opts
+        args = (o.get("tm_file"), self.primary_var.get(), o["heat_rows"], o["heat_weeks"],
+                bool(self.calendar_var.get()), o["refresh_min"])
+
+        def run():      # 读文件不放在 Tk 线程里
+            tm_file, primary, rows, weeks, calendar, refresh_min = args
+            try:
+                snap = tm_source.TmSource(tm_file).snapshot()
+                msgs = dashboard_v2.build_all(snap, None, datetime.now().astimezone(), primary, rows, weeks,
+                                              calendar, refresh_min)
+                self.events.put(("local_msgs", msgs, ""))
+            except Exception as e:  # noqa: BLE001 - 读坏了只记日志
+                self.events.put(("local_msgs", None, f"{type(e).__name__}: {e}"))
+        threading.Thread(target=run, name="refresh-data", daemon=True).start()
+
+    def _on_local_msgs(self, msgs: dict | None, err: str) -> bool:
+        self.refresh_data_btn.configure(state="normal")
+        if msgs is None:
+            log.warning("刷新数据失败：%s", err)
+            return False
+        if "mouse" in self.msgs:
+            msgs.pop("mouse")                        # 鼠标保留最近一次推送的读数
+        self.msgs.update(msgs)
+        log.info("已刷新预览数据（没有发给板子）")
+        return True
 
     # -- 屏幕预览 ------------------------------------------------------------
     def _schedule_preview(self) -> None:

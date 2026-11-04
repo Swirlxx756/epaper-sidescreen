@@ -111,8 +111,33 @@ class RapooMouseTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: mouse.snapshot().status == "ok"))
         snap = mouse.snapshot()
         self.assertEqual(snap.pct, 48)
-        self.assertIsNone(snap.charging)
+        self.assertIs(snap.charging, False)                 # byte 7 = 01：用电池
         self.assertEqual(snap.observed_at, 1000.0)
+
+    def test_charging_state_from_byte_7(self):
+        be = FakeBackend()
+        mouse, clock = self.make(be)
+        mouse.start()
+        charging = bytearray(REPORT)
+        charging[7] = 0x02                                  # 插着线时实测是 02
+        be.rx.put(bytes(charging))
+        self.assertTrue(wait_for(lambda: mouse.snapshot().charging is True))
+        charging[7] = 0x05                                  # 没见过的值：不猜
+        be.rx.put(bytes(charging))
+        self.assertTrue(wait_for(lambda: mouse.snapshot().charging is None))
+        be.rx.put(REPORT)
+        self.assertTrue(wait_for(lambda: mouse.snapshot().charging is False))
+        clock.t += 60                                       # 太久没报告 = off：不说在充电
+        self.assertEqual(mouse.snapshot().status, "off")
+        self.assertIsNone(mouse.snapshot().charging)
+
+    def test_parse_charging_real_reports(self):
+        plugged = bytes.fromhex("07 20 00 80 0c 80 0c 02 39 00 03 01 00 44 46 10 00 01 aa")
+        unplugged = bytes.fromhex("07 20 00 80 0c 80 0c 01 38 00 03 01 00 44 46 10 00 01 a5")
+        self.assertIs(m.parse_charging(plugged), True)
+        self.assertIs(m.parse_charging(unplugged), False)
+        self.assertIsNone(m.parse_charging(b"\x08" + plugged[1:]))
+        self.assertIsNone(m.parse_charging(plugged[:7]))
 
     def test_offset_14(self):
         be = FakeBackend()

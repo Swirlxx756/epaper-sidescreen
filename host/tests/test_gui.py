@@ -768,7 +768,7 @@ class FakeWorker:
         pass
 
     def request_reset(self):
-        pass
+        self.resets = getattr(self, "resets", 0) + 1
 
     def request_ota(self, image, token):
         self.otas.append((image, token))
@@ -1933,6 +1933,24 @@ class AppLayoutTests(AppTestBase):
         app.wx_pick_box.current(0)
         app.on_wx_pick()
         self.assertTrue(app.wx_place_var.get().startswith("已保存：上海"))
+
+    def test_refresh_data_rebuilds_preview_data_without_sending(self):
+        fixture = Path(__file__).with_name("fixtures") / "hub-devices.synthetic.json"
+        tm = Path(self.dir.name) / "hub-devices.json"
+        tm.write_bytes(fixture.read_bytes())
+        app = self.make(v2={"tm_file": str(tm)})
+        app.toggle_connection()
+        self.feed(("link", "serial", "v2"))
+        w = FakeWorker.instances[-1]
+        app.msgs["mouse"] = {"v": 2, "type": "mouse", "st": "ok", "pct": 57}
+        app.refresh_data()
+        self.assertEqual(str(app.refresh_data_btn.cget("state")), "disabled")
+        self.assertTrue(self.pump(lambda: "heat" in app.msgs))
+        self.assertEqual(set(app.msgs), set(dv.KINDS))
+        self.assertEqual(app.msgs["mouse"]["pct"], 57)                     # 鼠标沿用最近一次推送的
+        self.assertEqual(str(app.refresh_data_btn.cget("state")), "normal")
+        self.assertEqual(app.push_var.get(), "上次推送 --:--:--")          # 不算一次推送
+        self.assertEqual(w.commands, [])                                   # 什么也没发给板子
 
     def test_log_menu_copy_and_clear(self):
         app = self.make()

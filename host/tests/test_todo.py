@@ -314,10 +314,10 @@ class AppTodoTests(AppTestBase):
 
     def test_buttons_disabled_until_v2_link(self):
         app = self.make()
-        self.assertEqual(str(app.refresh_now_btn.cget("state")), "disabled")
+        self.assertEqual(str(app.push_now_btn.cget("state")), "disabled")
         self.assertEqual(str(app.push_page_btn.cget("state")), "disabled")
         self.connect(app)
-        self.assertEqual(str(app.refresh_now_btn.cget("state")), "normal")
+        self.assertEqual(str(app.push_now_btn.cget("state")), "normal")
         self.assertEqual(str(app.push_page_btn.cget("state")), "normal")
 
     def saved_page(self):
@@ -344,14 +344,14 @@ class AppTodoTests(AppTestBase):
         self.assertEqual(app.page, "dash")
         self.assertEqual(app.page_status_var.get(), gui.REFRESHING_TEXT)       # 固件没有开始事件：自己进入刷新中
         self.assertTrue(app.refreshing)
-        for w in (app.push_page_btn, app.refresh_now_btn):
+        for w in (app.push_page_btn, app.push_now_btn):
             self.assertEqual(str(w.cget("state")), "disabled")
         for r in app.page_radios:                                     # 单选框只是预览，刷新中也能点
             self.assertEqual(str(r.cget("state")), "normal")
         self.feed(("refreshed", datetime(2026, 10, 29, 23, 48, 5)))
         self.assertEqual(app.page_status_var.get(), "屏幕已刷新 23:48:05")
         self.assertFalse(app.refreshing)
-        for w in (app.push_page_btn, app.refresh_now_btn):
+        for w in (app.push_page_btn, app.push_now_btn):
             self.assertEqual(str(w.cget("state")), "normal")
 
     def test_failed_page_push_is_not_saved(self):
@@ -396,26 +396,34 @@ class AppTodoTests(AppTestBase):
         with patch.object(gui, "REFRESH_TIMEOUT_MS", 30):
             app = self.make()
             self.connect(app)
-            app.refresh_now()
-            self.feed(("cmd", "refresh", {"ok": True, "err": ""}))
+            app.push_page()
+            self.feed(("cmd", "page", {"ok": True, "err": ""}))
             self.assertTrue(app.refreshing)
             self.assertTrue(self.pump(lambda: not app.refreshing))
         self.assertIn("没有收到刷新完成", app.page_status_var.get())
-        self.assertEqual(str(app.refresh_now_btn.cget("state")), "normal")
+        self.assertEqual(str(app.push_now_btn.cget("state")), "normal")
 
-    def test_refresh_now_button_only_refreshes_and_not_twice(self):
+    def test_push_sends_page_and_all_data_without_refresh(self):
         app = self.make()
-        app.refresh_now()
+        app.push_page(refresh=False)
         self.assertEqual(FakeWorker.instances, [])                    # 没连接：什么也不发
         w = self.connect(app)
         app.page_var.set("weather")
         app.on_page()
-        app.refresh_now()                                             # 只刷新，不换页
-        self.assertEqual(w.commands[-1][:2], ("refresh", [tp.refresh_now_msg()]))
-        self.feed(("cmd", "refresh", {"ok": True, "err": ""}))
-        app.refresh_now()
-        self.assertEqual(len(w.commands), 1)                          # 刷新中不重复发
-        self.assertIsNone(self.saved_page())
+        app.push_page(refresh=False)                                  # 「推送」：不带 refresh_now
+        self.assertEqual(w.commands[-1][:2], ("page", [tp.page_msg("weather")]))
+        self.assertEqual(w.resets, 1)                                 # 全部数据块也重发
+        self.feed(("cmd", "page", {"ok": True, "err": ""}))
+        self.assertFalse(app.refreshing)                              # 屏幕按刷新间隔自己更新
+        self.assertEqual(self.saved_page(), "weather")
+        self.assertIn("已推送「天气」", app.page_status_var.get())
+        app.push_page()                                               # 「立即推送」：带 refresh_now
+        self.assertEqual(w.commands[-1][:2], ("page", [tp.page_msg("weather"), tp.refresh_now_msg()]))
+        self.assertEqual(w.resets, 2)
+        self.feed(("cmd", "page", {"ok": True, "err": ""}))
+        self.assertTrue(app.refreshing)
+        app.push_page()
+        self.assertEqual(len(w.commands), 2)                          # 刷新中不重复发
 
     def test_page_without_connection_previews_but_sends_nothing(self):
         app = self.make()

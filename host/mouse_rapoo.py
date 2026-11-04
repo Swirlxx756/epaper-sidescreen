@@ -26,6 +26,8 @@ USAGE = 0x02
 
 DEFAULT_REPORT_ID = 0x07
 DEFAULT_OFFSET = 8   # 0x30 = 48 %, matched against TrafficMonitor on 2026-10-28
+CHARGE_OFFSET = 7    # power state, compared plugged / unplugged on 2026-11-05
+CHARGE_STATES = {0x01: False, 0x02: True}  # 01 = on battery, 02 = charging; anything else = unknown
 RETRY_INTERVAL = 5.0
 PROBE_BYTES = (8, 13, 14)  # candidate battery bytes printed by --probe
 
@@ -50,6 +52,14 @@ def parse_report(data: bytes, report_id: int = DEFAULT_REPORT_ID,
     if pct > 100:
         return None
     return pct
+
+
+def parse_charging(data: bytes, report_id: int = DEFAULT_REPORT_ID,
+                   offset: int = CHARGE_OFFSET) -> bool | None:
+    """True = charging, False = on battery, None = not this report or an unknown state byte."""
+    if not data or len(data) <= offset or data[0] != report_id:
+        return None
+    return CHARGE_STATES.get(data[offset])
 
 
 # --------------------------------------------------------------------------
@@ -245,6 +255,7 @@ class RapooMouse:
         self._handle = None
         self._found = False
         self._pct: int | None = None
+        self._charging: bool | None = None
         self._observed_at: float | None = None
         self._error: str | None = None
         self._logged_error: str | None = None
@@ -283,7 +294,7 @@ class RapooMouse:
                 return MouseReading(None, None, None, "na", self._error)
             if self._observed_at is None or now - self._observed_at > self.off_after:
                 return MouseReading(self._pct, None, self._observed_at, "off", self._error)
-            return MouseReading(self._pct, None, self._observed_at, "ok", self._error)
+            return MouseReading(self._pct, self._charging, self._observed_at, "ok", self._error)
 
     # -- internals -------------------------------------------------------
     def _note_error(self, message: str) -> None:
@@ -358,6 +369,7 @@ class RapooMouse:
                 continue
             with self._lock:
                 self._pct = pct
+                self._charging = parse_charging(data, self.report_id)
                 self._observed_at = now
 
 
